@@ -4,6 +4,23 @@ import string
 from datetime import datetime
 import telebot
 import os
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# ===== ЗАГЛУШКА ДЛЯ RENDER (ПОРТ 10000) =====
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'OK')
+
+def run_health_server():
+    port = int(os.environ.get('PORT', 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
+
+# Запускаем сервер для проверки здоровья в отдельном потоке
+Thread(target=run_health_server, daemon=True).start()
 
 # ===== КОНФИГ =====
 TOKEN = os.getenv('TOKEN', "8998199059:AAHF-yCiyNZGU0s03eG-OEcQfw0agmtA7rQ")
@@ -26,12 +43,14 @@ cur.execute('''CREATE TABLE IF NOT EXISTS users (
 )''')
 conn.commit()
 
+# Перенос старых ников (если есть)
 cur.execute('SELECT id, game_nick FROM users WHERE game_nick IS NULL OR game_nick = ""')
 old_users = cur.fetchall()
 for user_id, _ in old_users:
     cur.execute('UPDATE users SET game_nick = ? WHERE id = ?', (f'user{user_id}', user_id))
 conn.commit()
 
+# Добавляем недостающие колонки (если их нет)
 try:
     cur.execute('ALTER TABLE users ADD COLUMN ref_code TEXT')
 except:
@@ -62,7 +81,8 @@ admin_keyboard.add('📢 Рассылка', '⬅️ Назад')
 
 # ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 def generate_ref_code():
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    chars = string.ascii_uppercase + string.digits
+    return ''.join(random.choices(chars, k=6))
 
 def is_admin(user_id):
     return user_id == ADMIN_ID
@@ -72,29 +92,36 @@ def is_admin(user_id):
 def start(msg):
     user_id = msg.from_user.id
     cur.execute('SELECT id FROM users WHERE id = ?', (user_id,))
+    
     if cur.fetchone():
         bot.send_message(msg.chat.id, f'👋 Снова здесь, {msg.from_user.first_name or "Игрок"}!', reply_markup=keyboard)
         return
+    
     ref_param = None
     if ' ' in msg.text:
         ref_param = msg.text.split()[1]
+    
     bot.send_message(msg.chat.id, '✏️ Придумай свой игровой ник (без пробелов):')
     bot.register_next_step_handler(msg, set_nick, ref_param)
 
 def set_nick(msg, ref_param=None):
     game_nick = msg.text.strip()
+    
     if ' ' in game_nick:
         bot.send_message(msg.chat.id, '❌ Ник не должен содержать пробелов. Попробуй ещё:')
         bot.register_next_step_handler(msg, set_nick, ref_param)
         return
+    
     cur.execute('SELECT id FROM users WHERE game_nick = ?', (game_nick,))
     if cur.fetchone():
         bot.send_message(msg.chat.id, '❌ Этот ник уже занят. Придумай другой:')
         bot.register_next_step_handler(msg, set_nick, ref_param)
         return
+    
     user_id = msg.from_user.id
     ref_code = generate_ref_code()
     ref_by = 0
+    
     if ref_param:
         cur.execute('SELECT id FROM users WHERE ref_code = ?', (ref_param,))
         ref_user = cur.fetchone()
@@ -103,10 +130,12 @@ def set_nick(msg, ref_param=None):
             cur.execute('UPDATE users SET ref_count = ref_count + 1, balance = balance + 50 WHERE id = ?', (ref_by,))
             conn.commit()
             bot.send_message(ref_by, f'🎉 *Новый реферал!*\n{msg.from_user.username or "Без юза"} присоединился.\n💰 +50 монет.', parse_mode='Markdown')
+    
     cur.execute('''INSERT INTO users (id, game_nick, balance, ref_code, ref_by, reg_date) 
                    VALUES (?, ?, ?, ?, ?, ?)''',
                 (user_id, game_nick, 0, ref_code, ref_by, datetime.now().strftime('%d.%m.%Y %H:%M')))
     conn.commit()
+    
     ref_text = f'\n👤 Пригласил: @{game_nick}' if ref_by else ''
     text = f'''✅ *Добро пожаловать!*
 
@@ -118,7 +147,7 @@ def set_nick(msg, ref_param=None):
 💡 Приглашай друзей и получай 50 монет за каждого!'''
     bot.send_message(msg.chat.id, text, parse_mode='Markdown', reply_markup=keyboard)
 
-# ===== ОСТАЛЬНЫЕ ФУНКЦИИ =====
+# ===== ПРОФИЛЬ =====
 @bot.message_handler(func=lambda m: m.text == '👤 Профиль')
 def profile(msg):
     user_id = msg.from_user.id
@@ -128,17 +157,31 @@ def profile(msg):
         bot.send_message(msg.chat.id, '❌ Сначала зарегистрируйся: /start')
         return
     game_nick, balance, reg_date = result
-    display_username = f'@{msg.from_user.username}' if msg.from_user.username else 'Нет юза'
-    if balance >= 100000: status = '🌟 Легенда'
-    elif balance >= 50000: status = '💵 Миллионер'
-    elif balance >= 10000: status = '🏰 Барон'
-    elif balance >= 5000: status = '🏦 Инвестор'
-    elif balance >= 1000: status = '👑 Магнат'
-    elif balance >= 500: status = '💎 Богач'
-    elif balance >= 200: status = '💰 Середняк'
-    elif balance >= 50: status = '🪙 Новичок'
-    elif balance >= 1: status = '🕊️ Бедняга'
-    else: status = '💀 Банкрот'
+    
+    username = msg.from_user.username
+    display_username = f'@{username}' if username else 'Нет юза'
+    
+    if balance >= 100000:
+        status = '🌟 Легенда'
+    elif balance >= 50000:
+        status = '💵 Миллионер'
+    elif balance >= 10000:
+        status = '🏰 Барон'
+    elif balance >= 5000:
+        status = '🏦 Инвестор'
+    elif balance >= 1000:
+        status = '👑 Магнат'
+    elif balance >= 500:
+        status = '💎 Богач'
+    elif balance >= 200:
+        status = '💰 Середняк'
+    elif balance >= 50:
+        status = '🪙 Новичок'
+    elif balance >= 1:
+        status = '🕊️ Бедняга'
+    else:
+        status = '💀 Банкрот'
+    
     text = f'''
 ╔═══════════════════════════════════╗
 ║          ✦  👤 ПРОФИЛЬ  ✦          ║
@@ -155,6 +198,7 @@ def profile(msg):
 '''
     bot.send_message(msg.chat.id, text, parse_mode='Markdown')
 
+# ===== БАЛАНС =====
 @bot.message_handler(func=lambda m: m.text == '💰 Баланс')
 def balance(msg):
     user_id = msg.from_user.id
@@ -163,8 +207,10 @@ def balance(msg):
     if not result:
         bot.send_message(msg.chat.id, '❌ Сначала зарегистрируйся: /start')
         return
-    bot.send_message(msg.chat.id, f'💰 Твой баланс: {result[0]:,} монет')
+    balance = result[0]
+    bot.send_message(msg.chat.id, f'💰 Твой баланс: {balance:,} монет')
 
+# ===== РЕФЕРАЛЫ =====
 @bot.message_handler(func=lambda m: m.text == '🔗 Рефералы')
 def refs(msg):
     user_id = msg.from_user.id
@@ -175,12 +221,20 @@ def refs(msg):
         return
     ref_code, ref_count, ref_earned = data
     username = bot.get_me().username
-    if ref_count >= 50: status = '👑 Легендарный пригласитель'
-    elif ref_count >= 25: status = '💎 Мастер рефералов'
-    elif ref_count >= 10: status = '🏆 Опытный'
-    elif ref_count >= 5: status = '⭐ Активный'
-    elif ref_count >= 1: status = '🟢 Начинающий'
-    else: status = '⚪ Нет рефералов'
+    
+    if ref_count >= 50:
+        status = '👑 Легендарный пригласитель'
+    elif ref_count >= 25:
+        status = '💎 Мастер рефералов'
+    elif ref_count >= 10:
+        status = '🏆 Опытный'
+    elif ref_count >= 5:
+        status = '⭐ Активный'
+    elif ref_count >= 1:
+        status = '🟢 Начинающий'
+    else:
+        status = '⚪ Нет рефералов'
+    
     text = f'''
 ╔═══════════════════════════════════╗
 ║        ✦  🔗 РЕФЕРАЛЫ  ✦          ║
@@ -197,6 +251,7 @@ def refs(msg):
 '''
     bot.send_message(msg.chat.id, text, parse_mode='Markdown')
 
+# ===== ТОП ИГРОКОВ =====
 @bot.message_handler(func=lambda m: m.text == '📊 Топ игроков')
 def top_players(msg):
     cur.execute('SELECT game_nick, balance FROM users ORDER BY balance DESC LIMIT 10')
@@ -216,7 +271,8 @@ def admin_panel(msg):
     if not is_admin(msg.from_user.id):
         bot.send_message(msg.chat.id, '❌ Доступ запрещён.')
         return
-    bot.send_message(msg.chat.id, '🔐 *Админ-панель*\nВыберите действие:', parse_mode='Markdown', reply_markup=admin_keyboard)
+    bot.send_message(msg.chat.id, '🔐 *Админ-панель*\nВыберите действие:', 
+                     parse_mode='Markdown', reply_markup=admin_keyboard)
 
 @bot.message_handler(func=lambda m: m.text == '⬅️ Назад' and is_admin(m.from_user.id))
 def back_to_main(msg):
@@ -232,12 +288,15 @@ def stats(msg):
     max_balance = cur.fetchone()[0] or 0
     cur.execute('SELECT AVG(balance) FROM users')
     avg_balance = round(cur.fetchone()[0] or 0, 1)
+    
     text = f'''
 📊 *СТАТИСТИКА СЕРВЕРА*
+
 👥 Всего игроков: {total_users}
 💰 Общий баланс: {total_balance:,}
 🏆 Макс. баланс: {max_balance:,}
 📈 Средний баланс: {avg_balance}
+
 📅 Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')}
 '''
     bot.send_message(msg.chat.id, text, parse_mode='Markdown')
@@ -256,16 +315,17 @@ def players_list(msg):
 
 @bot.message_handler(func=lambda m: m.text == '➕ Выдать монеты' and is_admin(m.from_user.id))
 def give_coins_start(msg):
-    bot.send_message(msg.chat.id, '✏️ Введите ник и сумму:\nПример: `Алексей 100`', parse_mode='Markdown')
+    bot.send_message(msg.chat.id, '✏️ Введите ник и сумму через пробел:\nПример: `Алексей 100`', parse_mode='Markdown')
     bot.register_next_step_handler(msg, give_coins_process)
 
 def give_coins_process(msg):
     try:
         parts = msg.text.split()
         if len(parts) != 2:
-            bot.send_message(msg.chat.id, '❌ Неверный формат.')
+            bot.send_message(msg.chat.id, '❌ Неверный формат. Нужно: `ник сумма`')
             return
-        game_nick, amount = parts[0], int(parts[1])
+        game_nick = parts[0]
+        amount = int(parts[1])
         cur.execute('SELECT id FROM users WHERE game_nick = ?', (game_nick,))
         if not cur.fetchone():
             bot.send_message(msg.chat.id, f'❌ Игрок {game_nick} не найден.')
@@ -278,7 +338,7 @@ def give_coins_process(msg):
 
 @bot.message_handler(func=lambda m: m.text == '➖ Забрать монеты' and is_admin(m.from_user.id))
 def take_coins_start(msg):
-    bot.send_message(msg.chat.id, '✏️ Введите ник и сумму:\nПример: `Алексей 50`')
+    bot.send_message(msg.chat.id, '✏️ Введите ник и сумму для списания:\nПример: `Алексей 50`')
     bot.register_next_step_handler(msg, take_coins_process)
 
 def take_coins_process(msg):
@@ -287,13 +347,16 @@ def take_coins_process(msg):
         if len(parts) != 2:
             bot.send_message(msg.chat.id, '❌ Неверный формат.')
             return
-        game_nick, amount = parts[0], int(parts[1])
+        game_nick = parts[0]
+        amount = int(parts[1])
         cur.execute('SELECT balance FROM users WHERE game_nick = ?', (game_nick,))
         user = cur.fetchone()
         if not user:
             bot.send_message(msg.chat.id, f'❌ Игрок {game_nick} не найден.')
             return
-        new_balance = max(0, user[0] - amount)
+        new_balance = user[0] - amount
+        if new_balance < 0:
+            new_balance = 0
         cur.execute('UPDATE users SET balance = ? WHERE game_nick = ?', (new_balance, game_nick))
         conn.commit()
         bot.send_message(msg.chat.id, f'✅ У {game_nick} списано {amount} монет. Баланс: {new_balance}')
