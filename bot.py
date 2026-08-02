@@ -1,10 +1,10 @@
 import os
-import sqlite3
 import random
-import string
+import hashlib
 from datetime import datetime
 import telebot
-import hashlib
+import psycopg2
+import psycopg2.extras
 
 # ===== КОНФИГ (ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ) =====
 TOKEN = os.getenv('TOKEN')
@@ -14,36 +14,136 @@ if not TOKEN:
 ADMIN_ID = int(os.getenv('ADMIN_ID', 6573154279))
 bot = telebot.TeleBot(TOKEN)
 
-# ===== БАЗА ДАННЫХ =====
-DB_PATH = os.getenv('DB_PATH', 'data/db.db')
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+# ===== ПОДКЛЮЧЕНИЕ К POSTGRESQL =====
+DATABASE_URL = os.getenv('DATABASE_URL')
+if not DATABASE_URL:
+    raise ValueError("❌ DATABASE_URL не найден! Добавьте переменную окружения")
 
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cur = conn.cursor()
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL)
 
-cur.execute('''CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY,
-    game_nick TEXT UNIQUE,
-    password TEXT,
-    balance INTEGER DEFAULT 0,
-    level INTEGER DEFAULT 1,
-    exp INTEGER DEFAULT 0,
-    reg_date TEXT,
-    is_logged_in INTEGER DEFAULT 0
-)''')
-conn.commit()
+# ===== ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ =====
+def init_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id BIGINT PRIMARY KEY,
+            game_nick TEXT UNIQUE,
+            password TEXT,
+            balance INTEGER DEFAULT 0,
+            level INTEGER DEFAULT 1,
+            exp INTEGER DEFAULT 0,
+            reg_date TEXT,
+            is_logged_in INTEGER DEFAULT 0
+        )
+    ''')
+    conn.commit()
+    cur.close()
+    conn.close()
 
-try:
-    cur.execute('ALTER TABLE users ADD COLUMN password TEXT')
-except:
-    pass
+init_db()
 
-try:
-    cur.execute('ALTER TABLE users ADD COLUMN is_logged_in INTEGER DEFAULT 0')
-except:
-    pass
+# ===== ФУНКЦИИ ДЛЯ РАБОТЫ С БД =====
+def get_user(user_id):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute('SELECT * FROM users WHERE id = %s', (user_id,))
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+    return user
 
-conn.commit()
+def get_user_by_nick(nick):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute('SELECT * FROM users WHERE game_nick = %s', (nick,))
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+    return user
+
+def create_user(user_id, nick, hashed_password):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('''
+        INSERT INTO users (id, game_nick, password, reg_date)
+        VALUES (%s, %s, %s, %s)
+    ''', (user_id, nick, hashed_password, datetime.now().strftime('%d.%m.%Y %H:%M')))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def update_user(user_id, **kwargs):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    for key, value in kwargs.items():
+        cur.execute(f'UPDATE users SET {key} = %s WHERE id = %s', (value, user_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def get_top_players(limit=10):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT game_nick, balance, level FROM users ORDER BY balance DESC LIMIT %s', (limit,))
+    players = cur.fetchall()
+    cur.close()
+    conn.close()
+    return players
+
+def get_all_users():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT id FROM users')
+    users = cur.fetchall()
+    cur.close()
+    conn.close()
+    return users
+
+def get_stats():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT COUNT(*) FROM users')
+    total_users = cur.fetchone()[0]
+    cur.execute('SELECT COALESCE(SUM(balance), 0) FROM users')
+    total_balance = cur.fetchone()[0]
+    cur.execute('SELECT COALESCE(MAX(balance), 0) FROM users')
+    max_balance = cur.fetchone()[0]
+    cur.execute('SELECT COALESCE(AVG(balance), 0) FROM users')
+    avg_balance = round(cur.fetchone()[0], 1)
+    cur.execute('SELECT COALESCE(AVG(level), 0) FROM users')
+    avg_level = round(cur.fetchone()[0], 1)
+    cur.close()
+    conn.close()
+    return total_users, total_balance, max_balance, avg_balance, avg_level
+
+def user_exists(user_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT id FROM users WHERE id = %s', (user_id,))
+    exists = cur.fetchone() is not None
+    cur.close()
+    conn.close()
+    return exists
+
+def is_logged_in(user_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT is_logged_in FROM users WHERE id = %s', (user_id,))
+    result = cur.fetchone()
+    cur.close()
+    conn.close()
+    return result and result[0] == 1
+
+def is_admin_by_nick(nick):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT id FROM users WHERE game_nick = %s', (nick,))
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+    return user and is_admin(user[0])
 
 # ===== КЛАВИАТУРЫ =====
 auth_keyboard = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -67,7 +167,9 @@ def is_admin(user_id):
     return user_id == ADMIN_ID
 
 def add_exp(user_id, amount):
-    cur.execute('SELECT exp, level FROM users WHERE id = ?', (user_id,))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT exp, level FROM users WHERE id = %s', (user_id,))
     exp, level = cur.fetchone()
     new_exp = exp + amount
     level_up = False
@@ -75,9 +177,11 @@ def add_exp(user_id, amount):
         new_exp -= level * 50
         level += 1
         level_up = True
-        cur.execute('UPDATE users SET balance = balance + 50 WHERE id = ?', (user_id,))
-    cur.execute('UPDATE users SET exp = ?, level = ? WHERE id = ?', (new_exp, level, user_id))
+        cur.execute('UPDATE users SET balance = balance + 50 WHERE id = %s', (user_id,))
+    cur.execute('UPDATE users SET exp = %s, level = %s WHERE id = %s', (new_exp, level, user_id))
     conn.commit()
+    cur.close()
+    conn.close()
     return level_up, level
 
 def get_progress_bar(exp, level):
@@ -127,22 +231,11 @@ def get_next_status(balance):
             return statuses[i]
     return None
 
-def is_logged_in(user_id):
-    cur.execute('SELECT is_logged_in FROM users WHERE id = ?', (user_id,))
-    result = cur.fetchone()
-    return result and result[0] == 1
-
-def is_admin_by_nick(nick):
-    cur.execute('SELECT id FROM users WHERE game_nick = ?', (nick,))
-    user = cur.fetchone()
-    return user and is_admin(user[0])
-
 # ===== АВТОРИЗАЦИЯ =====
 @bot.message_handler(commands=['start'])
 def start(msg):
     user_id = msg.from_user.id
-    cur.execute('SELECT id FROM users WHERE id = ?', (user_id,))
-    if cur.fetchone():
+    if user_exists(user_id):
         if is_logged_in(user_id):
             bot.send_message(msg.chat.id, f'👋 Снова здесь, {msg.from_user.first_name or "Игрок"}!', reply_markup=main_keyboard)
         else:
@@ -154,8 +247,7 @@ def start(msg):
 @bot.message_handler(func=lambda m: m.text == '🔑 Войти')
 def login_start(msg):
     user_id = msg.from_user.id
-    cur.execute('SELECT id FROM users WHERE id = ?', (user_id,))
-    if not cur.fetchone():
+    if not user_exists(user_id):
         bot.send_message(msg.chat.id, '❌ Вы не зарегистрированы. Нажмите "✨ Зарегистрироваться"')
         return
     if is_logged_in(user_id):
@@ -167,8 +259,7 @@ def login_start(msg):
 def login_nick(msg):
     nick = msg.text.strip()
     user_id = msg.from_user.id
-    cur.execute('SELECT id FROM users WHERE game_nick = ?', (nick,))
-    user = cur.fetchone()
+    user = get_user_by_nick(nick)
     if not user:
         bot.send_message(msg.chat.id, '❌ Игрок с таким ником не найден. Попробуйте ещё раз или зарегистрируйтесь.')
         return
@@ -179,13 +270,11 @@ def login_password(msg, nick):
     password = msg.text.strip()
     user_id = msg.from_user.id
     hashed = hash_password(password)
-    cur.execute('SELECT id FROM users WHERE game_nick = ? AND password = ?', (nick, hashed))
-    user = cur.fetchone()
-    if not user:
+    user = get_user_by_nick(nick)
+    if not user or user['password'] != hashed:
         bot.send_message(msg.chat.id, '❌ Неверный пароль. Попробуйте ещё раз.')
         return
-    cur.execute('UPDATE users SET is_logged_in = 1 WHERE id = ?', (user_id,))
-    conn.commit()
+    update_user(user_id, is_logged_in=1)
     bot.send_message(msg.chat.id, f'✅ Добро пожаловать, {nick}!', reply_markup=main_keyboard)
 
 @bot.message_handler(func=lambda m: m.text == '✨ Зарегистрироваться')
@@ -199,8 +288,7 @@ def register_nick(msg):
         bot.send_message(msg.chat.id, '❌ Ник должен быть от 3 до 15 символов без пробелов. Попробуйте ещё раз:')
         bot.register_next_step_handler(msg, register_nick)
         return
-    cur.execute('SELECT id FROM users WHERE game_nick = ?', (nick,))
-    if cur.fetchone():
+    if get_user_by_nick(nick):
         bot.send_message(msg.chat.id, '❌ Этот ник уже занят. Придумайте другой:')
         bot.register_next_step_handler(msg, register_nick)
         return
@@ -224,19 +312,14 @@ def register_password_confirm(msg, nick, password):
         return
     user_id = msg.from_user.id
     hashed = hash_password(password)
-    cur.execute('''INSERT INTO users (id, game_nick, password, balance, reg_date) 
-                   VALUES (?, ?, ?, ?, ?)''',
-                (user_id, nick, hashed, 0, datetime.now().strftime('%d.%m.%Y %H:%M')))
-    conn.commit()
-    cur.execute('UPDATE users SET is_logged_in = 1 WHERE id = ?', (user_id,))
-    conn.commit()
+    create_user(user_id, nick, hashed)
+    update_user(user_id, is_logged_in=1)
     bot.send_message(msg.chat.id, f'✅ Поздравляю, {nick}! Ты зарегистрирован и авторизован.', reply_markup=main_keyboard)
 
 @bot.message_handler(func=lambda m: m.text == '🚪 Выйти')
 def logout(msg):
     user_id = msg.from_user.id
-    cur.execute('UPDATE users SET is_logged_in = 0 WHERE id = ?', (user_id,))
-    conn.commit()
+    update_user(user_id, is_logged_in=0)
     bot.send_message(msg.chat.id, '👋 Вы вышли из аккаунта.', reply_markup=auth_keyboard)
 
 # ===== ПРОФИЛЬ =====
@@ -246,12 +329,15 @@ def profile(msg):
     if not is_logged_in(user_id):
         bot.send_message(msg.chat.id, '❌ Вы не авторизованы. Войдите или зарегистрируйтесь.', reply_markup=auth_keyboard)
         return
-    cur.execute('SELECT game_nick, balance, level, exp, reg_date FROM users WHERE id = ?', (user_id,))
-    result = cur.fetchone()
-    if not result:
+    user = get_user(user_id)
+    if not user:
         bot.send_message(msg.chat.id, '❌ Ошибка. Попробуйте /start')
         return
-    game_nick, balance, level, exp, reg_date = result
+    game_nick = user['game_nick']
+    balance = user['balance']
+    level = user['level']
+    exp = user['exp']
+    reg_date = user['reg_date']
     
     username = msg.from_user.username
     display_username = f'@{username}' if username else 'Нет юза'
@@ -289,12 +375,11 @@ def balance(msg):
     if not is_logged_in(user_id):
         bot.send_message(msg.chat.id, '❌ Вы не авторизованы.', reply_markup=auth_keyboard)
         return
-    cur.execute('SELECT balance FROM users WHERE id = ?', (user_id,))
-    result = cur.fetchone()
-    if not result:
+    user = get_user(user_id)
+    if not user:
         bot.send_message(msg.chat.id, '❌ Ошибка. Попробуйте /start')
         return
-    bot.send_message(msg.chat.id, f'💰 Твой баланс: {result[0]:,} монет')
+    bot.send_message(msg.chat.id, f'💰 Твой баланс: {user["balance"]:,} монет')
 
 # ===== ИГРА =====
 @bot.message_handler(func=lambda m: m.text == '🎰 Играть')
@@ -303,34 +388,30 @@ def game(msg):
     if not is_logged_in(user_id):
         bot.send_message(msg.chat.id, '❌ Вы не авторизованы.', reply_markup=auth_keyboard)
         return
-    cur.execute('SELECT balance FROM users WHERE id = ?', (user_id,))
-    result = cur.fetchone()
-    if not result:
+    user = get_user(user_id)
+    if not user:
         bot.send_message(msg.chat.id, '❌ Ошибка. Попробуйте /start')
         return
-    balance = result[0]
+    balance = user['balance']
     if balance < 10:
         bot.send_message(msg.chat.id, '❌ Не хватает 10 монет!')
         return
-    cur.execute('UPDATE users SET balance = balance - 10 WHERE id = ?', (user_id,))
+    update_user(user_id, balance=balance - 10)
     win = random.choice([0, 1])
     if win:
-        cur.execute('UPDATE users SET balance = balance + 25 WHERE id = ?', (user_id,))
-        conn.commit()
+        update_user(user_id, balance=balance - 10 + 25)
         level_up, new_level = add_exp(user_id, 10)
         result_text = '🎉 Ты выиграл! +25 монет, +10 опыта'
         if level_up:
             result_text += f'\n🎉 УРОВЕНЬ ПОВЫШЕН! Твой уровень: {new_level}'
     else:
-        conn.commit()
         level_up, new_level = add_exp(user_id, 2)
         result_text = '😢 Ты проиграл. -10 монет, +2 опыта'
         if level_up:
             result_text += f'\n🎉 УРОВЕНЬ ПОВЫШЕН! Твой уровень: {new_level}'
     
-    cur.execute('SELECT balance FROM users WHERE id = ?', (user_id,))
-    new_balance = cur.fetchone()[0]
-    result_text += f'\n💰 Баланс: {new_balance}'
+    user = get_user(user_id)
+    result_text += f'\n💰 Баланс: {user["balance"]}'
     bot.send_message(msg.chat.id, result_text)
 
 # ===== ТОП =====
@@ -340,8 +421,7 @@ def top_players(msg):
     if not is_logged_in(user_id):
         bot.send_message(msg.chat.id, '❌ Вы не авторизованы.', reply_markup=auth_keyboard)
         return
-    cur.execute('SELECT game_nick, balance, level FROM users ORDER BY balance DESC LIMIT 10')
-    players = cur.fetchall()
+    players = get_top_players(10)
     if not players:
         bot.send_message(msg.chat.id, '📭 Нет игроков.')
         return
@@ -359,12 +439,11 @@ def all_statuses(msg):
     if not is_logged_in(user_id):
         bot.send_message(msg.chat.id, '❌ Вы не авторизованы.', reply_markup=auth_keyboard)
         return
-    cur.execute('SELECT balance FROM users WHERE id = ?', (user_id,))
-    result = cur.fetchone()
-    if not result:
+    user = get_user(user_id)
+    if not user:
         bot.send_message(msg.chat.id, '❌ Ошибка. Попробуйте /start')
         return
-    balance = result[0]
+    balance = user['balance']
     
     text = '''
 ╔═══════════════════════════════════╗
@@ -423,17 +502,7 @@ def back_to_main(msg):
 
 @bot.message_handler(func=lambda m: m.text == '📊 Статистика' and is_admin(m.from_user.id))
 def stats(msg):
-    cur.execute('SELECT COUNT(*) FROM users')
-    total_users = cur.fetchone()[0]
-    cur.execute('SELECT SUM(balance) FROM users')
-    total_balance = cur.fetchone()[0] or 0
-    cur.execute('SELECT MAX(balance) FROM users')
-    max_balance = cur.fetchone()[0] or 0
-    cur.execute('SELECT AVG(balance) FROM users')
-    avg_balance = round(cur.fetchone()[0] or 0, 1)
-    cur.execute('SELECT AVG(level) FROM users')
-    avg_level = round(cur.fetchone()[0] or 0, 1)
-    
+    total_users, total_balance, max_balance, avg_balance, avg_level = get_stats()
     text = f'''
 📊 СТАТИСТИКА СЕРВЕРА
 
@@ -449,8 +518,7 @@ def stats(msg):
 
 @bot.message_handler(func=lambda m: m.text == '👥 Список игроков' and is_admin(m.from_user.id))
 def players_list(msg):
-    cur.execute('SELECT game_nick, balance, level FROM users ORDER BY balance DESC LIMIT 10')
-    players = cur.fetchall()
+    players = get_top_players(10)
     if not players:
         bot.send_message(msg.chat.id, '📭 Нет игроков.')
         return
@@ -473,12 +541,11 @@ def give_coins_process(msg):
             return
         game_nick = parts[0]
         amount = int(parts[1])
-        cur.execute('SELECT id FROM users WHERE game_nick = ?', (game_nick,))
-        if not cur.fetchone():
+        user = get_user_by_nick(game_nick)
+        if not user:
             bot.send_message(msg.chat.id, f'❌ Игрок {game_nick} не найден.')
             return
-        cur.execute('UPDATE users SET balance = balance + ? WHERE game_nick = ?', (amount, game_nick))
-        conn.commit()
+        update_user(user['id'], balance=user['balance'] + amount)
         bot.send_message(msg.chat.id, f'✅ {game_nick} получил {amount} монет.')
     except:
         bot.send_message(msg.chat.id, '❌ Ошибка. Используйте: ник 100')
@@ -496,16 +563,14 @@ def take_coins_process(msg):
             return
         game_nick = parts[0]
         amount = int(parts[1])
-        cur.execute('SELECT balance FROM users WHERE game_nick = ?', (game_nick,))
-        user = cur.fetchone()
+        user = get_user_by_nick(game_nick)
         if not user:
             bot.send_message(msg.chat.id, f'❌ Игрок {game_nick} не найден.')
             return
-        new_balance = user[0] - amount
+        new_balance = user['balance'] - amount
         if new_balance < 0:
             new_balance = 0
-        cur.execute('UPDATE users SET balance = ? WHERE game_nick = ?', (new_balance, game_nick))
-        conn.commit()
+        update_user(user['id'], balance=new_balance)
         bot.send_message(msg.chat.id, f'✅ У {game_nick} списано {amount} монет. Баланс: {new_balance}')
     except:
         bot.send_message(msg.chat.id, '❌ Ошибка.')
@@ -517,8 +582,7 @@ def broadcast_start(msg):
 
 def broadcast_process(msg):
     text = msg.text
-    cur.execute('SELECT id FROM users')
-    users = cur.fetchall()
+    users = get_all_users()
     if not users:
         bot.send_message(msg.chat.id, '❌ Нет пользователей.')
         return
@@ -545,7 +609,7 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, shutdown_handler)
     
     print('✅ Бот запущен!')
-    print(f'📁 База данных: {DB_PATH}')
+    print(f'📁 База данных: PostgreSQL (Railway)')
     bot.remove_webhook()
     
     while True:
