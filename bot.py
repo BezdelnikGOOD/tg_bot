@@ -1,4 +1,3 @@
-
 import os
 import sqlite3
 import random
@@ -14,7 +13,7 @@ if not TOKEN:
 ADMIN_ID = int(os.getenv('ADMIN_ID', 6573154279))
 bot = telebot.TeleBot(TOKEN)
 
-# ===== БАЗА ДАННЫХ (С ПОДДЕРЖКОЙ VOLUME) =====
+# ===== БАЗА ДАННЫХ =====
 DB_PATH = os.getenv('DB_PATH', 'data/db.db')
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
@@ -25,11 +24,14 @@ cur.execute('''CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     game_nick TEXT,
     balance INTEGER DEFAULT 0,
+    level INTEGER DEFAULT 1,
+    exp INTEGER DEFAULT 0,
     reg_date TEXT,
     ref_code TEXT,
     ref_by INTEGER DEFAULT 0,
     ref_count INTEGER DEFAULT 0,
-    ref_earned INTEGER DEFAULT 0
+    ref_earned INTEGER DEFAULT 0,
+    last_daily TEXT
 )''')
 conn.commit()
 
@@ -55,12 +57,17 @@ try:
     cur.execute('ALTER TABLE users ADD COLUMN ref_earned INTEGER DEFAULT 0')
 except:
     pass
+try:
+    cur.execute('ALTER TABLE users ADD COLUMN last_daily TEXT')
+except:
+    pass
 conn.commit()
 
 # ===== КЛАВИАТУРЫ =====
 keyboard = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
 keyboard.add('👤 Профиль', '💰 Баланс')
 keyboard.add('🔗 Рефералы', '📊 Топ игроков')
+keyboard.add('🎁 Ежедневный бонус', '🎰 Играть')
 
 admin_keyboard = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
 admin_keyboard.add('📊 Статистика', '👥 Список игроков')
@@ -74,6 +81,27 @@ def generate_ref_code():
 
 def is_admin(user_id):
     return user_id == ADMIN_ID
+
+def add_exp(user_id, amount):
+    cur.execute('SELECT exp, level FROM users WHERE id = ?', (user_id,))
+    exp, level = cur.fetchone()
+    new_exp = exp + amount
+    level_up = False
+    while new_exp >= level * 50:
+        new_exp -= level * 50
+        level += 1
+        level_up = True
+        cur.execute('UPDATE users SET balance = balance + 50 WHERE id = ?', (user_id,))
+    cur.execute('UPDATE users SET exp = ?, level = ? WHERE id = ?', (new_exp, level, user_id))
+    conn.commit()
+    return level_up, level
+
+def get_progress_bar(exp, level):
+    needed = level * 50
+    filled = min(exp, needed)
+    percent = int((filled / needed) * 10)
+    bar = '█' * percent + '░' * (10 - percent)
+    return bar, filled, needed
 
 # ===== РЕГИСТРАЦИЯ =====
 @bot.message_handler(commands=['start'])
@@ -117,11 +145,12 @@ def set_nick(msg, ref_param=None):
             ref_by = ref_user[0]
             cur.execute('UPDATE users SET ref_count = ref_count + 1, balance = balance + 50 WHERE id = ?', (ref_by,))
             conn.commit()
-            bot.send_message(ref_by, f'🎉 *Новый реферал!*\n{msg.from_user.username or "Без юза"} присоединился.\n💰 +50 монет.', parse_mode='Markdown')
+            add_exp(ref_by, 10)
+            bot.send_message(ref_by, f'🎉 *Новый реферал!*\n{msg.from_user.username or "Без юза"} присоединился.\n💰 +50 монет, +10 опыта.', parse_mode='Markdown')
     
-    cur.execute('''INSERT INTO users (id, game_nick, balance, ref_code, ref_by, reg_date) 
+    cur.execute('''INSERT INTO users (id, game_nick, balance, reg_date, ref_code, ref_by) 
                    VALUES (?, ?, ?, ?, ?, ?)''',
-                (user_id, game_nick, 0, ref_code, ref_by, datetime.now().strftime('%d.%m.%Y %H:%M')))
+                (user_id, game_nick, 0, datetime.now().strftime('%d.%m.%Y %H:%M'), ref_code, ref_by))
     conn.commit()
     
     ref_text = f'\n👤 Пригласил: @{game_nick}' if ref_by else ''
@@ -132,22 +161,24 @@ def set_nick(msg, ref_param=None):
 🔗 Ссылка: `https://t.me/{bot.get_me().username}?start={ref_code}`
 {ref_text}
 
-💡 Приглашай друзей и получай 50 монет за каждого!'''
+💡 Приглашай друзей и получай 50 монет и 10 опыта за каждого!'''
     bot.send_message(msg.chat.id, text, parse_mode='Markdown', reply_markup=keyboard)
 
 # ===== ПРОФИЛЬ =====
 @bot.message_handler(func=lambda m: m.text == '👤 Профиль')
 def profile(msg):
     user_id = msg.from_user.id
-    cur.execute('SELECT game_nick, balance, reg_date FROM users WHERE id = ?', (user_id,))
+    cur.execute('SELECT game_nick, balance, level, exp, reg_date FROM users WHERE id = ?', (user_id,))
     result = cur.fetchone()
     if not result:
         bot.send_message(msg.chat.id, '❌ Сначала зарегистрируйся: /start')
         return
-    game_nick, balance, reg_date = result
+    game_nick, balance, level, exp, reg_date = result
     
     username = msg.from_user.username
     display_username = f'@{username}' if username else 'Нет юза'
+    
+    bar, filled, needed = get_progress_bar(exp, level)
     
     if balance >= 100000:
         status = '🌟 Легенда'
@@ -178,6 +209,9 @@ def profile(msg):
 ║   📛 Ник: {game_nick}
 ║   🔖 Юзернейм: {display_username}
 ║   💰 Баланс: {balance:,} монет
+║   📈 Уровень: {level}
+║   ⭐ Опыт: {exp} / {needed}
+║   📊 Прогресс: [{bar}]
 ║   📅 В игре с: {reg_date}
 ║                                   ║
 ║   🏷️ Статус: {status}
@@ -196,6 +230,63 @@ def balance(msg):
         bot.send_message(msg.chat.id, '❌ Сначала зарегистрируйся: /start')
         return
     bot.send_message(msg.chat.id, f'💰 Твой баланс: {result[0]:,} монет')
+
+# ===== ЕЖЕДНЕВНЫЙ БОНУС =====
+@bot.message_handler(func=lambda m: m.text == '🎁 Ежедневный бонус')
+def daily_bonus(msg):
+    user_id = msg.from_user.id
+    cur.execute('SELECT last_daily FROM users WHERE id = ?', (user_id,))
+    result = cur.fetchone()
+    if not result:
+        bot.send_message(msg.chat.id, '❌ Сначала зарегистрируйся: /start')
+        return
+    last = result[0]
+    today = datetime.now().strftime('%Y-%m-%d')
+    if last == today:
+        bot.send_message(msg.chat.id, '❌ Ты уже забирал бонус сегодня! Возвращайся завтра.')
+        return
+    bonus = random.randint(10, 40)
+    cur.execute('UPDATE users SET balance = balance + ?, last_daily = ? WHERE id = ?', (bonus, today, user_id))
+    conn.commit()
+    level_up, new_level = add_exp(user_id, 5)
+    text = f'🎁 Ты получил {bonus} монет и 5 опыта!'
+    if level_up:
+        text += f'\n🎉 УРОВЕНЬ ПОВЫШЕН! Твой уровень: {new_level}'
+    bot.send_message(msg.chat.id, text)
+
+# ===== ИГРА (орёл/решка) =====
+@bot.message_handler(func=lambda m: m.text == '🎰 Играть')
+def game(msg):
+    user_id = msg.from_user.id
+    cur.execute('SELECT balance FROM users WHERE id = ?', (user_id,))
+    result = cur.fetchone()
+    if not result:
+        bot.send_message(msg.chat.id, '❌ Сначала зарегистрируйся: /start')
+        return
+    balance = result[0]
+    if balance < 10:
+        bot.send_message(msg.chat.id, '❌ Не хватает 10 монет!')
+        return
+    cur.execute('UPDATE users SET balance = balance - 10 WHERE id = ?', (user_id,))
+    win = random.choice([0, 1])
+    if win:
+        cur.execute('UPDATE users SET balance = balance + 25 WHERE id = ?', (user_id,))
+        conn.commit()
+        level_up, new_level = add_exp(user_id, 10)
+        result_text = '🎉 Ты выиграл! +25 монет, +10 опыта'
+        if level_up:
+            result_text += f'\n🎉 УРОВЕНЬ ПОВЫШЕН! Твой уровень: {new_level}'
+    else:
+        conn.commit()
+        level_up, new_level = add_exp(user_id, 2)
+        result_text = '😢 Ты проиграл. -10 монет, +2 опыта'
+        if level_up:
+            result_text += f'\n🎉 УРОВЕНЬ ПОВЫШЕН! Твой уровень: {new_level}'
+    
+    cur.execute('SELECT balance FROM users WHERE id = ?', (user_id,))
+    new_balance = cur.fetchone()[0]
+    result_text += f'\n💰 Баланс: {new_balance}'
+    bot.send_message(msg.chat.id, result_text)
 
 # ===== РЕФЕРАЛЫ =====
 @bot.message_handler(func=lambda m: m.text == '🔗 Рефералы')
@@ -241,15 +332,15 @@ def refs(msg):
 # ===== ТОП ИГРОКОВ =====
 @bot.message_handler(func=lambda m: m.text == '📊 Топ игроков')
 def top_players(msg):
-    cur.execute('SELECT game_nick, balance FROM users ORDER BY balance DESC LIMIT 10')
+    cur.execute('SELECT game_nick, balance, level FROM users ORDER BY balance DESC LIMIT 10')
     players = cur.fetchall()
     if not players:
         bot.send_message(msg.chat.id, '📭 Нет игроков.')
         return
-    text = '🏆 *ТОП-10 ИГРОКОВ*\n\n'
-    for i, (game_nick, balance) in enumerate(players, 1):
+    text = '🏆 *ТОП-10 ПО БАЛАНСУ*\n\n'
+    for i, (game_nick, balance, level) in enumerate(players, 1):
         medal = '🥇' if i == 1 else '🥈' if i == 2 else '🥉' if i == 3 else f'{i}.'
-        text += f'{medal} {game_nick} — {balance:,} монет\n'
+        text += f'{medal} {game_nick} — {balance:,} монет (уровень {level})\n'
     bot.send_message(msg.chat.id, text, parse_mode='Markdown')
 
 # ===== АДМИН-ПАНЕЛЬ =====
@@ -275,6 +366,8 @@ def stats(msg):
     max_balance = cur.fetchone()[0] or 0
     cur.execute('SELECT AVG(balance) FROM users')
     avg_balance = round(cur.fetchone()[0] or 0, 1)
+    cur.execute('SELECT AVG(level) FROM users')
+    avg_level = round(cur.fetchone()[0] or 0, 1)
     
     text = f'''
 📊 *СТАТИСТИКА СЕРВЕРА*
@@ -283,6 +376,7 @@ def stats(msg):
 💰 Общий баланс: {total_balance:,}
 🏆 Макс. баланс: {max_balance:,}
 📈 Средний баланс: {avg_balance}
+📈 Средний уровень: {avg_level}
 
 📅 Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')}
 '''
@@ -290,14 +384,14 @@ def stats(msg):
 
 @bot.message_handler(func=lambda m: m.text == '👥 Список игроков' and is_admin(m.from_user.id))
 def players_list(msg):
-    cur.execute('SELECT game_nick, balance FROM users ORDER BY balance DESC LIMIT 10')
+    cur.execute('SELECT game_nick, balance, level FROM users ORDER BY balance DESC LIMIT 10')
     players = cur.fetchall()
     if not players:
         bot.send_message(msg.chat.id, '📭 Нет игроков.')
         return
     text = '🏆 *ТОП-10 ИГРОКОВ*\n\n'
-    for i, (game_nick, balance) in enumerate(players, 1):
-        text += f'{i}. {game_nick} — {balance:,} монет\n'
+    for i, (game_nick, balance, level) in enumerate(players, 1):
+        text += f'{i}. {game_nick} — {balance:,} монет (уровень {level})\n'
     bot.send_message(msg.chat.id, text, parse_mode='Markdown')
 
 @bot.message_handler(func=lambda m: m.text == '➕ Выдать монеты' and is_admin(m.from_user.id))
