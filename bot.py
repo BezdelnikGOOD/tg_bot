@@ -33,13 +33,11 @@ cur.execute('''CREATE TABLE IF NOT EXISTS users (
 )''')
 conn.commit()
 
-# Добавляем колонку password, если её нет
 try:
     cur.execute('ALTER TABLE users ADD COLUMN password TEXT')
 except:
     pass
 
-# Добавляем колонку is_logged_in, если её нет
 try:
     cur.execute('ALTER TABLE users ADD COLUMN is_logged_in INTEGER DEFAULT 0')
 except:
@@ -48,17 +46,14 @@ except:
 conn.commit()
 
 # ===== КЛАВИАТУРЫ =====
-# Главная (неавторизованный)
 auth_keyboard = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
 auth_keyboard.add('🔑 Войти', '✨ Зарегистрироваться')
 
-# Главная (авторизованный)
 main_keyboard = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
 main_keyboard.add('👤 Профиль', '💰 Баланс')
 main_keyboard.add('🎰 Играть', '📊 Топ игроков')
 main_keyboard.add('🏷️ Все статусы', '🚪 Выйти')
 
-# Админ-клавиатура
 admin_keyboard = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
 admin_keyboard.add('📊 Статистика', '👥 Список игроков')
 admin_keyboard.add('➕ Выдать монеты', '➖ Забрать монеты')
@@ -136,6 +131,11 @@ def is_logged_in(user_id):
     cur.execute('SELECT is_logged_in FROM users WHERE id = ?', (user_id,))
     result = cur.fetchone()
     return result and result[0] == 1
+
+def is_admin_by_nick(nick):
+    cur.execute('SELECT id FROM users WHERE game_nick = ?', (nick,))
+    user = cur.fetchone()
+    return user and is_admin(user[0])
 
 # ===== АВТОРИЗАЦИЯ =====
 @bot.message_handler(commands=['start'])
@@ -280,7 +280,7 @@ def profile(msg):
 ║                                   ║
 ╚═══════════════════════════════════╝
 '''
-    bot.send_message(msg.chat.id, text, parse_mode='Markdown')
+    bot.send_message(msg.chat.id, text)
 
 # ===== БАЛАНС =====
 @bot.message_handler(func=lambda m: m.text == '💰 Баланс')
@@ -345,17 +345,12 @@ def top_players(msg):
     if not players:
         bot.send_message(msg.chat.id, '📭 Нет игроков.')
         return
-    text = '🏆 *ТОП-10 ПО БАЛАНСУ*\n\n'
+    text = '🏆 ТОП-10 ПО БАЛАНСУ\n\n'
     for i, (game_nick, balance, level) in enumerate(players, 1):
         medal = '🥇' if i == 1 else '🥈' if i == 2 else '🥉' if i == 3 else f'{i}.'
         admin_tag = ' 👑' if is_admin_by_nick(game_nick) else ''
         text += f'{medal} {game_nick} — {balance:,} монет (уровень {level}){admin_tag}\n'
-    bot.send_message(msg.chat.id, text, parse_mode='Markdown')
-
-def is_admin_by_nick(nick):
-    cur.execute('SELECT id FROM users WHERE game_nick = ?', (nick,))
-    user = cur.fetchone()
-    return user and is_admin(user[0])
+    bot.send_message(msg.chat.id, text)
 
 # ===== ВСЕ СТАТУСЫ =====
 @bot.message_handler(func=lambda m: m.text == '🏷️ Все статусы')
@@ -401,18 +396,18 @@ def all_statuses(msg):
         remaining = next_threshold - balance
         progress = int((balance - threshold) / (next_threshold - threshold) * 100) if next_threshold > threshold else 0
         bar = '█' * (progress // 10) + '░' * (10 - (progress // 10))
-        text += f'''║   📌 Твой статус: {current_status}       ║
-║   📈 До «{next_status_name}»: {remaining} монет ║
-║   📊 Прогресс: [{bar}] {progress}%          ║
+        text += f'''   📌 Твой статус: {current_status}
+   📈 До "{next_status_name}": {remaining} монет
+   📊 Прогресс: [{bar}] {progress}%
 '''
     else:
-        text += f'''║   📌 Твой статус: {current_status}       ║
-║   👑 Ты достиг максимального статуса! ║
-║   📊 Прогресс: [██████████] 100%      ║
+        text += f'''   📌 Твой статус: {current_status}
+   👑 Ты достиг максимального статуса!
+   📊 Прогресс: [██████████] 100%
 '''
     
     text += '╚═══════════════════════════════════╝'
-    bot.send_message(msg.chat.id, text, parse_mode='Markdown')
+    bot.send_message(msg.chat.id, text)
 
 # ===== АДМИН-ПАНЕЛЬ =====
 @bot.message_handler(commands=['admin'])
@@ -420,8 +415,7 @@ def admin_panel(msg):
     if not is_admin(msg.from_user.id):
         bot.send_message(msg.chat.id, '❌ Доступ запрещён.')
         return
-    bot.send_message(msg.chat.id, '🔐 *Админ-панель*\nВыберите действие:', 
-                     parse_mode='Markdown', reply_markup=admin_keyboard)
+    bot.send_message(msg.chat.id, '🔐 Админ-панель\nВыберите действие:', reply_markup=admin_keyboard)
 
 @bot.message_handler(func=lambda m: m.text == '⬅️ Назад' and is_admin(m.from_user.id))
 def back_to_main(msg):
@@ -441,7 +435,7 @@ def stats(msg):
     avg_level = round(cur.fetchone()[0] or 0, 1)
     
     text = f'''
-📊 *СТАТИСТИКА СЕРВЕРА*
+📊 СТАТИСТИКА СЕРВЕРА
 
 👥 Всего игроков: {total_users}
 💰 Общий баланс: {total_balance:,}
@@ -451,7 +445,7 @@ def stats(msg):
 
 📅 Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')}
 '''
-    bot.send_message(msg.chat.id, text, parse_mode='Markdown')
+    bot.send_message(msg.chat.id, text)
 
 @bot.message_handler(func=lambda m: m.text == '👥 Список игроков' and is_admin(m.from_user.id))
 def players_list(msg):
@@ -460,22 +454,22 @@ def players_list(msg):
     if not players:
         bot.send_message(msg.chat.id, '📭 Нет игроков.')
         return
-    text = '🏆 *ТОП-10 ИГРОКОВ*\n\n'
+    text = '🏆 ТОП-10 ИГРОКОВ\n\n'
     for i, (game_nick, balance, level) in enumerate(players, 1):
         admin_tag = ' 👑' if is_admin_by_nick(game_nick) else ''
         text += f'{i}. {game_nick} — {balance:,} монет (уровень {level}){admin_tag}\n'
-    bot.send_message(msg.chat.id, text, parse_mode='Markdown')
+    bot.send_message(msg.chat.id, text)
 
 @bot.message_handler(func=lambda m: m.text == '➕ Выдать монеты' and is_admin(m.from_user.id))
 def give_coins_start(msg):
-    bot.send_message(msg.chat.id, '✏️ Введите ник и сумму через пробел:\nПример: `Алексей 100`', parse_mode='Markdown')
+    bot.send_message(msg.chat.id, '✏️ Введите ник и сумму через пробел:\nПример: Алексей 100')
     bot.register_next_step_handler(msg, give_coins_process)
 
 def give_coins_process(msg):
     try:
         parts = msg.text.split()
         if len(parts) != 2:
-            bot.send_message(msg.chat.id, '❌ Неверный формат. Нужно: `ник сумма`')
+            bot.send_message(msg.chat.id, '❌ Неверный формат. Нужно: ник сумма')
             return
         game_nick = parts[0]
         amount = int(parts[1])
@@ -487,11 +481,11 @@ def give_coins_process(msg):
         conn.commit()
         bot.send_message(msg.chat.id, f'✅ {game_nick} получил {amount} монет.')
     except:
-        bot.send_message(msg.chat.id, '❌ Ошибка. Используйте: `ник 100`')
+        bot.send_message(msg.chat.id, '❌ Ошибка. Используйте: ник 100')
 
 @bot.message_handler(func=lambda m: m.text == '➖ Забрать монеты' and is_admin(m.from_user.id))
 def take_coins_start(msg):
-    bot.send_message(msg.chat.id, '✏️ Введите ник и сумму для списания:\nПример: `Алексей 50`')
+    bot.send_message(msg.chat.id, '✏️ Введите ник и сумму для списания:\nПример: Алексей 50')
     bot.register_next_step_handler(msg, take_coins_process)
 
 def take_coins_process(msg):
@@ -531,7 +525,7 @@ def broadcast_process(msg):
     sent = 0
     for user in users:
         try:
-            bot.send_message(user[0], f'📢 *Сообщение от админа:*\n\n{text}', parse_mode='Markdown')
+            bot.send_message(user[0], f'📢 Сообщение от админа:\n\n{text}')
             sent += 1
         except:
             pass
