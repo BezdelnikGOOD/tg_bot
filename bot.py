@@ -13,13 +13,18 @@ if not TOKEN:
 ADMIN_ID = int(os.getenv('ADMIN_ID', 6573154279))
 bot = telebot.TeleBot(TOKEN)
 
-# ===== БАЗА ДАННЫХ =====
+# ===== БАЗА ДАННЫХ (СОХРАНЯЕТСЯ В VOLUME) =====
+# Если Volume не подключён — создаётся в папке data автоматически
 DB_PATH = os.getenv('DB_PATH', 'data/db.db')
+
+# Создаём папку data, если её нет
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
+# Подключаемся к базе
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cur = conn.cursor()
 
+# ===== СОЗДАЁМ ТАБЛИЦУ, ЕСЛИ ЕЁ НЕТ =====
 cur.execute('''CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     game_nick TEXT,
@@ -35,33 +40,20 @@ cur.execute('''CREATE TABLE IF NOT EXISTS users (
 )''')
 conn.commit()
 
+# Исправляем старые записи (если game_nick пустой)
 cur.execute('SELECT id, game_nick FROM users WHERE game_nick IS NULL OR game_nick = ""')
 old_users = cur.fetchall()
 for user_id, _ in old_users:
     cur.execute('UPDATE users SET game_nick = ? WHERE id = ?', (f'user{user_id}', user_id))
 conn.commit()
 
-try:
-    cur.execute('ALTER TABLE users ADD COLUMN ref_code TEXT')
-except:
-    pass
-try:
-    cur.execute('ALTER TABLE users ADD COLUMN ref_by INTEGER DEFAULT 0')
-except:
-    pass
-try:
-    cur.execute('ALTER TABLE users ADD COLUMN ref_count INTEGER DEFAULT 0')
-except:
-    pass
-try:
-    cur.execute('ALTER TABLE users ADD COLUMN ref_earned INTEGER DEFAULT 0')
-except:
-    pass
-try:
-    cur.execute('ALTER TABLE users ADD COLUMN last_daily TEXT')
-except:
-    pass
-conn.commit()
+# Добавляем недостающие колонки (если их нет)
+for col in ['ref_code', 'ref_by', 'ref_count', 'ref_earned', 'last_daily']:
+    try:
+        cur.execute(f'ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT 0')
+        conn.commit()
+    except:
+        pass
 
 # ===== КЛАВИАТУРЫ =====
 keyboard = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -99,7 +91,7 @@ def add_exp(user_id, amount):
 def get_progress_bar(exp, level):
     needed = level * 50
     filled = min(exp, needed)
-    percent = int((filled / needed) * 10)
+    percent = int((filled / needed) * 10) if needed > 0 else 0
     bar = '█' * percent + '░' * (10 - percent)
     return bar, filled, needed
 
@@ -122,6 +114,7 @@ def start(msg):
 
 def set_nick(msg, ref_param=None):
     game_nick = msg.text.strip()
+    user_id = msg.from_user.id
     
     if ' ' in game_nick:
         bot.send_message(msg.chat.id, '❌ Ник не должен содержать пробелов. Попробуй ещё:')
@@ -134,7 +127,6 @@ def set_nick(msg, ref_param=None):
         bot.register_next_step_handler(msg, set_nick, ref_param)
         return
     
-    user_id = msg.from_user.id
     ref_code = generate_ref_code()
     ref_by = 0
     
@@ -152,6 +144,12 @@ def set_nick(msg, ref_param=None):
                    VALUES (?, ?, ?, ?, ?, ?)''',
                 (user_id, game_nick, 0, datetime.now().strftime('%d.%m.%Y %H:%M'), ref_code, ref_by))
     conn.commit()
+    
+    # Проверяем, что пользователь сохранился
+    cur.execute('SELECT id FROM users WHERE id = ?', (user_id,))
+    if not cur.fetchone():
+        bot.send_message(msg.chat.id, '❌ Ошибка сохранения! Попробуй ещё раз /start')
+        return
     
     ref_text = f'\n👤 Пригласил: @{game_nick}' if ref_by else ''
     text = f'''✅ *Добро пожаловать!*
@@ -171,7 +169,7 @@ def profile(msg):
     cur.execute('SELECT game_nick, balance, level, exp, reg_date FROM users WHERE id = ?', (user_id,))
     result = cur.fetchone()
     if not result:
-        bot.send_message(msg.chat.id, '❌ Сначала зарегистрируйся: /start')
+        bot.send_message(msg.chat.id, '❌ Ты не зарегистрирован! Напиши /start')
         return
     game_nick, balance, level, exp, reg_date = result
     
@@ -227,7 +225,7 @@ def balance(msg):
     cur.execute('SELECT balance FROM users WHERE id = ?', (user_id,))
     result = cur.fetchone()
     if not result:
-        bot.send_message(msg.chat.id, '❌ Сначала зарегистрируйся: /start')
+        bot.send_message(msg.chat.id, '❌ Ты не зарегистрирован! Напиши /start')
         return
     bot.send_message(msg.chat.id, f'💰 Твой баланс: {result[0]:,} монет')
 
@@ -238,7 +236,7 @@ def daily_bonus(msg):
     cur.execute('SELECT last_daily FROM users WHERE id = ?', (user_id,))
     result = cur.fetchone()
     if not result:
-        bot.send_message(msg.chat.id, '❌ Сначала зарегистрируйся: /start')
+        bot.send_message(msg.chat.id, '❌ Ты не зарегистрирован! Напиши /start')
         return
     last = result[0]
     today = datetime.now().strftime('%Y-%m-%d')
@@ -261,7 +259,7 @@ def game(msg):
     cur.execute('SELECT balance FROM users WHERE id = ?', (user_id,))
     result = cur.fetchone()
     if not result:
-        bot.send_message(msg.chat.id, '❌ Сначала зарегистрируйся: /start')
+        bot.send_message(msg.chat.id, '❌ Ты не зарегистрирован! Напиши /start')
         return
     balance = result[0]
     if balance < 10:
@@ -295,7 +293,7 @@ def refs(msg):
     cur.execute('SELECT ref_code, ref_count, ref_earned FROM users WHERE id = ?', (user_id,))
     data = cur.fetchone()
     if not data:
-        bot.send_message(msg.chat.id, '❌ Сначала зарегистрируйся: /start')
+        bot.send_message(msg.chat.id, '❌ Ты не зарегистрирован! Напиши /start')
         return
     ref_code, ref_count, ref_earned = data
     username = bot.get_me().username
@@ -467,8 +465,21 @@ def broadcast_process(msg):
 
 # ===== ЗАПУСК =====
 if __name__ == '__main__':
+    import signal
+    import sys
+    
+    def shutdown_handler(signum, frame):
+        print('🛑 Завершаем работу...')
+        bot.remove_webhook()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    signal.signal(signal.SIGINT, shutdown_handler)
+    
     print('✅ Бот запущен!')
+    print(f'📁 База данных: {DB_PATH}')
     bot.remove_webhook()
+    
     while True:
         try:
             bot.infinity_polling(timeout=10, long_polling_timeout=5)
