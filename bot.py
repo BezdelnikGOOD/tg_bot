@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import telebot
 import psycopg2
 import psycopg2.extras
+import requests
 
 # ===== КОНФИГ =====
 TOKEN = os.getenv('TOKEN')
@@ -99,17 +100,6 @@ def init_db():
             role TEXT DEFAULT 'member',
             joined_at TEXT,
             PRIMARY KEY (user_id, clan_id)
-        )
-    ''')
-    
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS clan_invites (
-            id SERIAL PRIMARY KEY,
-            clan_id INTEGER,
-            user_id BIGINT,
-            invited_by BIGINT,
-            created_at TEXT,
-            status TEXT DEFAULT 'pending'
         )
     ''')
     
@@ -377,7 +367,6 @@ def get_user_bonuses(user_id):
         exp_multiplier += 0.20
         shop_discount = 0.40
     
-    # Премиум Пасс бонусы
     tier = user.get('pp_tier', 'free')
     tier_data = PP_TIERS.get(tier, {})
     coin_multiplier += tier_data.get('coin_bonus', 0)
@@ -545,6 +534,47 @@ def activate_vip(user_id, days):
     
     update_user(user_id, vip_end=end_date.isoformat())
 
+def format_reward_text(reward_dict):
+    if not reward_dict:
+        return '❌ Нет награды'
+    
+    parts = []
+    for key, value in reward_dict.items():
+        if key == 'coins':
+            parts.append(f'💰 {value} монет')
+        elif key == 'exp':
+            parts.append(f'⭐ {value} опыта')
+        elif key == 'ticket':
+            parts.append(f'🎟️ Билет x{value}')
+        elif key == 'energy':
+            parts.append(f'⚡ Энергия +{value}')
+        elif key == 'energy_full':
+            parts.append(f'⚡ Полное восстановление энергии')
+        elif key == 'pizza':
+            parts.append(f'🍕 Пицца x{value}')
+        elif key == 'gem':
+            parts.append(f'💎 Алмаз x{value}')
+        elif key == 'sword':
+            parts.append(f'⚔️ Меч x{value}')
+        elif key == 'vip_scroll':
+            parts.append(f'📜 Свиток VIP x{value}')
+        elif key == 'vip_7days':
+            parts.append(f'👑 VIP на 7 дней')
+        elif key == 'vip_14days':
+            parts.append(f'👑 VIP на 14 дней')
+        elif key == 'vip_30days':
+            parts.append(f'👑 VIP на 30 дней')
+        elif key == 'star_skin':
+            parts.append(f'⭐ Скин «Звёздный»')
+        elif key == 'legendary_skin':
+            parts.append(f'🌟 Скин «Легендарный»')
+        elif key == 'mythic_skin':
+            parts.append(f'👑 Скин «Мифический»')
+        else:
+            parts.append(f'{key}: {value}')
+    
+    return ', '.join(parts) if parts else '❌ Нет награды'
+
 # ============================================================
 # ПРЕМИУМ ПАСС (3 УРОВНЯ)
 # ============================================================
@@ -654,9 +684,9 @@ def notify_pp_level_up(user_id, level):
     if rewards.get('free'):
         text += f'🆓 +{rewards["free"].get("coins", 0)} монет, +{rewards["free"].get("exp", 0)} опыта\n'
     if rewards.get('premium'):
-        text += f'⭐ Премиум: +{rewards["premium"]}\n'
+        text += f'⭐ Премиум: +{format_reward_text(rewards["premium"])}\n'
     if rewards.get('premium_plus'):
-        text += f'👑 Premium+: +{rewards["premium_plus"]}\n'
+        text += f'👑 Premium+: +{format_reward_text(rewards["premium_plus"])}\n'
     
     bot.send_message(user_id, text, parse_mode='Markdown')
 
@@ -1515,7 +1545,6 @@ def process_shop_purchase(msg, category):
     if final_price >= 5000:
         notify_all_players(f'🛒 *Покупка*: {format_player_name(user["game_nick"])} купил «{item_data["name"]}» за {final_price} монет!')
     
-    # Если это VIP-подписка
     if item_data.get('type') == 'vip':
         vip_level = item_data['effect']['vip_level']
         days = item_data['effect']['days']
@@ -1567,9 +1596,9 @@ def premium_pass_menu(msg):
     if rewards.get('free'):
         text += f'🆓 +{rewards["free"].get("coins", 0)} монет, +{rewards["free"].get("exp", 0)} опыта\n'
     if rewards.get('premium'):
-        text += f'⭐ +{rewards["premium"]}\n'
+        text += f'⭐ +{format_reward_text(rewards["premium"])}\n'
     if rewards.get('premium_plus'):
-        text += f'👑 Premium+: +{rewards["premium_plus"]}\n'
+        text += f'👑 Premium+: +{format_reward_text(rewards["premium_plus"])}\n'
     
     text += f"""
 ⏳ До следующего уровня: {next_level_exp - progress} опыта
@@ -1591,14 +1620,25 @@ def premium_pass_menu(msg):
 @bot.callback_query_handler(func=lambda call: call.data == 'pp_rewards')
 def pp_show_rewards(call):
     text = '🎖️ **ВСЕ НАГРАДЫ ПРЕМИУМ ПАССА**\n\n'
+    
     for level in range(1, PP_MAX_LEVEL + 1):
         rewards = PP_REWARDS.get(level, {})
         free = rewards.get('free', {})
         premium = rewards.get('premium', {})
         premium_plus = rewards.get('premium_plus', {})
-        text += f"Уровень {level}: 🆓{free} | ⭐{premium} | 👑{premium_plus}\n"
+        
+        free_text = format_reward_text(free)
+        premium_text = format_reward_text(premium)
+        premium_plus_text = format_reward_text(premium_plus)
+        
+        text += f"**Уровень {level}:**\n"
+        text += f"  🆓 {free_text}\n"
+        text += f"  ⭐ {premium_text}\n"
+        text += f"  👑 {premium_plus_text}\n\n"
+        
         if level % 10 == 0:
-            text += '\n'
+            text += '━━━━━━━━━━━━━━━━━━━━━\n\n'
+    
     bot.send_message(call.message.chat.id, text, parse_mode='Markdown')
     bot.answer_callback_query(call.id)
 
@@ -2102,7 +2142,6 @@ def leave_clan(msg):
     
     clan = get_clan(user['clan_id'])
     
-    # Проверяем, является ли лидером
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute('SELECT id FROM clan_members WHERE user_id = %s AND clan_id = %s AND role = %s', 
@@ -2156,6 +2195,14 @@ def admin_panel(msg):
 @bot.message_handler(func=lambda m: m.text == '⬅️ Назад' and is_admin(m.from_user.id))
 def back_to_main_admin(msg):
     bot.send_message(msg.chat.id, '🏠 Главное меню', reply_markup=main_keyboard)
+
+@bot.message_handler(func=lambda m: m.text == '🔙 Назад')
+def back_to_main(msg):
+    user_id = msg.from_user.id
+    if is_logged_in(user_id):
+        bot.send_message(msg.chat.id, '🏠 Главное меню', reply_markup=main_keyboard)
+    else:
+        bot.send_message(msg.chat.id, '🔐 Войдите', reply_markup=auth_keyboard)
 
 @bot.message_handler(func=lambda m: m.text == '📊 Статистика' and is_admin(m.from_user.id))
 def stats(msg):
@@ -3092,7 +3139,10 @@ if __name__ == '__main__':
     bot.remove_webhook()
     while True:
         try:
-            bot.infinity_polling(timeout=10, long_polling_timeout=5)
+            bot.infinity_polling(timeout=60, long_polling_timeout=30)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            print(f'❌ Сетевая ошибка: {e}. Перезапуск через 10 секунд...')
+            time.sleep(10)
         except Exception as e:
-            print(f'❌ Ошибка: {e}. Перезапуск...')
+            print(f'❌ Ошибка: {e}. Перезапуск через 5 секунд...')
             time.sleep(5)
