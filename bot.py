@@ -29,7 +29,6 @@ def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
     
-    # Таблица пользователей
     cur.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id BIGINT PRIMARY KEY,
@@ -45,7 +44,6 @@ def init_db():
         )
     ''')
     
-    # Таблица бизнесов (глобальная)
     cur.execute('''
         CREATE TABLE IF NOT EXISTS businesses (
             id INTEGER PRIMARY KEY,
@@ -60,14 +58,11 @@ def init_db():
         )
     ''')
     
-    # Проверяем, есть ли бизнесы
     cur.execute('SELECT COUNT(*) FROM businesses')
     count = cur.fetchone()[0]
     
     if count == 0:
-        # Вставляем 50 бизнесов
         businesses = [
-            # ЕДА
             (1, '🍋 Лимонадный киоск', 'food', 1000, 120),
             (2, '🍦 Мороженое', 'food', 2500, 300),
             (3, '🍿 Попкорн', 'food', 5000, 600),
@@ -78,7 +73,6 @@ def init_db():
             (8, '🥩 Стейк-хаус', 'food', 150000, 18000),
             (9, '🍷 Ресторан', 'food', 300000, 36000),
             (10, '🍾 Элитный ресторан', 'food', 600000, 72000),
-            # ТОРГОВЛЯ
             (11, '🛒 Ларёк', 'trade', 1500, 180),
             (12, '📱 Салон связи', 'trade', 4000, 480),
             (13, '🏪 Магазин', 'trade', 8000, 960),
@@ -89,7 +83,6 @@ def init_db():
             (18, '🏨 Отель', 'trade', 280000, 33600),
             (19, '🏗️ Строительная фирма', 'trade', 550000, 66000),
             (20, '🏙️ Недвижимость', 'trade', 1100000, 132000),
-            # ПРОИЗВОДСТВО
             (21, '🍺 Пивоварня', 'factory', 3000, 360),
             (22, '🧵 Швейная фабрика', 'factory', 7000, 840),
             (23, '🔩 Металлообработка', 'factory', 15000, 1800),
@@ -100,7 +93,6 @@ def init_db():
             (28, '✈️ Авиазавод', 'factory', 500000, 60000),
             (29, '🚀 Космический завод', 'factory', 1000000, 120000),
             (30, '⚛️ Атомная станция', 'factory', 2000000, 240000),
-            # РАЗВЛЕЧЕНИЯ
             (31, '🎮 Игровой клуб', 'entertainment', 5000, 600),
             (32, '🎲 Казино', 'entertainment', 12000, 1440),
             (33, '🎬 Кинотеатр', 'entertainment', 25000, 3000),
@@ -111,7 +103,6 @@ def init_db():
             (38, '📺 Телеканал', 'entertainment', 800000, 96000),
             (39, '🎮 Игровая студия', 'entertainment', 1600000, 192000),
             (40, '🤖 IT-корпорация', 'entertainment', 3200000, 384000),
-            # МЕГА-БИЗНЕСЫ
             (41, '🏦 Банк', 'mega', 200000, 24000),
             (42, '🛢️ Нефтяная вышка', 'mega', 500000, 60000),
             (43, '💎 Алмазный рудник', 'mega', 1200000, 144000),
@@ -271,6 +262,10 @@ admin_keyboard = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_wid
 admin_keyboard.add('📊 Статистика', '👥 Список игроков')
 admin_keyboard.add('➕ Выдать монеты', '➖ Забрать монеты')
 admin_keyboard.add('📢 Рассылка', '⬅️ Назад')
+
+business_keyboard = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+business_keyboard.add('🏢 Мои бизнесы', '📋 Все бизнесы')
+business_keyboard.add('🔙 Назад')
 
 # ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 def hash_password(password):
@@ -491,37 +486,41 @@ def all_statuses(msg):
 
 # ===== БИЗНЕСЫ =====
 @bot.message_handler(func=lambda m: m.text == '🏢 Бизнесы')
-def businesses_menu(msg):
+def businesses_main(msg):
+    user_id = msg.from_user.id
+    if not is_logged_in(user_id):
+        bot.send_message(msg.chat.id, '❌ Войдите.', reply_markup=auth_keyboard)
+        return
+    text = '🏢 БИЗНЕСЫ\nВыберите действие:'
+    bot.send_message(msg.chat.id, text, reply_markup=business_keyboard)
+
+@bot.message_handler(func=lambda m: m.text == '📋 Все бизнесы')
+def show_all_businesses(msg):
     user_id = msg.from_user.id
     if not is_logged_in(user_id):
         bot.send_message(msg.chat.id, '❌ Войдите.', reply_markup=auth_keyboard)
         return
     
-    user = get_user(user_id)
-    my_biz = get_user_businesses(user_id)
     all_biz = get_all_businesses()
+    text = '📋 ВСЕ БИЗНЕСЫ\n\n'
     
-    text = f'🏢 БИЗНЕСЫ\n💰 Баланс: {user["balance"]} монет\n\n'
-    text += '📋 Категории:\n'
-    text += '🍔 Еда (1-10) | 🛍️ Торговля (11-20)\n'
-    text += '🏭 Производство (21-30) | 🎮 Развлечения (31-40)\n'
-    text += '🌌 Мега-бизнесы (41-50)\n\n'
-    text += f'🏢 Мои бизнесы: {len(my_biz)}\n'
-    
-    if my_biz:
-        total_income = sum(b['income'] for b in my_biz)
-        text += f'💰 Доход в час: {total_income} монет\n'
+    for biz in all_biz:
+        status = '🟢 СВОБОДЕН' if biz['owner_id'] is None else f'🔒 {biz["owner_nick"]}'
+        text += f"{biz['id']}. {biz['name']} — {biz['price']} монет ({biz['income']}/час) {status}\n"
     
     text += '\nВведите номер бизнеса для покупки (1-50):'
     bot.send_message(msg.chat.id, text)
-    bot.register_next_step_handler(msg, business_action)
+    bot.register_next_step_handler(msg, process_buy_business)
 
-def business_action(msg):
+def process_buy_business(msg):
     user_id = msg.from_user.id
     try:
         biz_id = int(msg.text.strip())
+        if biz_id < 1 or biz_id > 50:
+            bot.send_message(msg.chat.id, '❌ Введите число от 1 до 50.')
+            return
     except:
-        bot.send_message(msg.chat.id, '❌ Введите номер от 1 до 50.')
+        bot.send_message(msg.chat.id, '❌ Введите номер бизнеса (1-50).')
         return
     
     biz = get_business_by_id(biz_id)
@@ -529,42 +528,79 @@ def business_action(msg):
         bot.send_message(msg.chat.id, '❌ Бизнес не найден.')
         return
     
-    user = get_user(user_id)
-    
-    if biz['owner_id'] is None:
-        # Бизнес свободен
-        if user['balance'] < biz['price']:
-            bot.send_message(msg.chat.id, f'❌ Не хватает {biz["price"] - user["balance"]} монет.')
-            return
-        # Покупка
-        update_user(user_id, balance=user['balance'] - biz['price'])
-        buy_business(biz_id, user_id, user['game_nick'])
-        bot.send_message(msg.chat.id, f'✅ Вы купили {biz["name"]}! Доход: {biz["income"]} монет в час.')
-        
-        # Уведомление всем админам
-        if is_admin(user_id):
-            bot.send_message(ADMIN_ID, f'👑 {user["game_nick"]} купил {biz["name"]}!')
-        
+    if biz['owner_id'] is not None:
+        bot.send_message(msg.chat.id, f'🔒 {biz["name"]} уже принадлежит {biz["owner_nick"]}.')
         return
     
-    elif biz['owner_id'] == user_id:
-        # Сбор дохода
-        if biz['last_collected']:
-            last = datetime.fromisoformat(biz['last_collected'])
-            now = datetime.now()
-            hours = (now - last).total_seconds() / 3600
-            income = int(biz['income'] * hours)
-            if income < 1:
-                bot.send_message(msg.chat.id, '⏳ Слишком рано. Доход ещё не накопился.')
-                return
-            collect_business_income(biz_id)
-            update_user(user_id, balance=user['balance'] + income)
-            bot.send_message(msg.chat.id, f'💰 Собрано {income} монет с {biz["name"]}!')
-        else:
-            collect_business_income(biz_id)
-            bot.send_message(msg.chat.id, f'✅ Начало сбора дохода с {biz["name"]}!')
+    user = get_user(user_id)
+    if user['balance'] < biz['price']:
+        bot.send_message(msg.chat.id, f'❌ Не хватает {biz["price"] - user["balance"]} монет.')
+        return
+    
+    update_user(user_id, balance=user['balance'] - biz['price'])
+    buy_business(biz_id, user_id, user['game_nick'])
+    bot.send_message(msg.chat.id, f'✅ Вы купили {biz["name"]}! Доход: {biz["income"]} монет в час.')
+    
+    if is_admin(user_id):
+        bot.send_message(ADMIN_ID, f'👑 {user["game_nick"]} купил {biz["name"]}!')
+
+@bot.message_handler(func=lambda m: m.text == '🏢 Мои бизнесы')
+def show_my_businesses(msg):
+    user_id = msg.from_user.id
+    if not is_logged_in(user_id):
+        bot.send_message(msg.chat.id, '❌ Войдите.', reply_markup=auth_keyboard)
+        return
+    
+    my_biz = get_user_businesses(user_id)
+    if not my_biz:
+        bot.send_message(msg.chat.id, '📭 У вас нет бизнесов. Купите первый через "📋 Все бизнесы"!')
+        return
+    
+    text = '🏢 МОИ БИЗНЕСЫ\n\n'
+    for biz in my_biz:
+        last = datetime.fromisoformat(biz['last_collected']) if biz['last_collected'] else datetime.now()
+        now = datetime.now()
+        hours = (now - last).total_seconds() / 3600
+        income = int(biz['income'] * hours) if hours > 0 else 0
+        text += f"{biz['id']}. {biz['name']} — {biz['income']}/час\n   Накоплено: {income} монет\n\n"
+    
+    text += 'Введите номер бизнеса для сбора дохода:'
+    bot.send_message(msg.chat.id, text)
+    bot.register_next_step_handler(msg, process_collect_income)
+
+def process_collect_income(msg):
+    user_id = msg.from_user.id
+    try:
+        biz_id = int(msg.text.strip())
+    except:
+        bot.send_message(msg.chat.id, '❌ Введите номер бизнеса.')
+        return
+    
+    biz = get_business_by_id(biz_id)
+    if not biz or biz['owner_id'] != user_id:
+        bot.send_message(msg.chat.id, '❌ Это не ваш бизнес.')
+        return
+    
+    last = datetime.fromisoformat(biz['last_collected']) if biz['last_collected'] else datetime.now()
+    now = datetime.now()
+    hours = (now - last).total_seconds() / 3600
+    income = int(biz['income'] * hours)
+    
+    if income < 1:
+        bot.send_message(msg.chat.id, '⏳ Доход ещё не накопился. Подождите.')
+        return
+    
+    collect_business_income(biz_id)
+    update_user(user_id, balance=get_user(user_id)['balance'] + income)
+    bot.send_message(msg.chat.id, f'💰 Собрано {income} монет с {biz["name"]}!')
+
+@bot.message_handler(func=lambda m: m.text == '🔙 Назад')
+def back_from_business(msg):
+    user_id = msg.from_user.id
+    if is_logged_in(user_id):
+        bot.send_message(msg.chat.id, '🏠 Главное меню', reply_markup=main_keyboard)
     else:
-        bot.send_message(msg.chat.id, f'🔒 {biz["name"]} принадлежит {biz["owner_nick"]}')
+        bot.send_message(msg.chat.id, '🔐 Войдите', reply_markup=auth_keyboard)
 
 # ===== АДМИН-ПАНЕЛЬ =====
 @bot.message_handler(commands=['admin'])
