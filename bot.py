@@ -1,34 +1,37 @@
 import os
 import random
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 import telebot
 import psycopg2
 import psycopg2.extras
+import json
+import time
 
-# ===== КОНФИГ (ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ) =====
+# ===== КОНФИГ =====
 TOKEN = os.getenv('TOKEN')
 if not TOKEN:
-    raise ValueError("❌ Токен не найден! Добавьте переменную окружения TOKEN")
+    raise ValueError("❌ Токен не найден!")
 
 ADMIN_ID = int(os.getenv('ADMIN_ID', 6573154279))
 bot = telebot.TeleBot(TOKEN)
 
-# ===== ПОДКЛЮЧЕНИЕ К POSTGRESQL =====
+# ===== БАЗА ДАННЫХ =====
 DATABASE_URL = os.getenv('DATABASE_URL')
 if not DATABASE_URL:
-    raise ValueError("❌ DATABASE_URL не найден! Добавьте переменную окружения")
+    raise ValueError("❌ DATABASE_URL не найден!")
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
-# ===== ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ =====
+# ===== ИНИЦИАЛИЗАЦИЯ =====
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute('DROP TABLE IF EXISTS users')
+    
+    # Таблица пользователей
     cur.execute('''
-        CREATE TABLE users (
+        CREATE TABLE IF NOT EXISTS users (
             id BIGINT PRIMARY KEY,
             game_nick TEXT UNIQUE,
             password TEXT,
@@ -41,14 +44,103 @@ def init_db():
             role TEXT DEFAULT 'user'
         )
     ''')
+    
+    # Таблица бизнесов (глобальная)
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS businesses (
+            id INTEGER PRIMARY KEY,
+            name TEXT,
+            category TEXT,
+            price INTEGER,
+            income INTEGER,
+            cooldown INTEGER DEFAULT 300,
+            owner_id BIGINT DEFAULT NULL,
+            owner_nick TEXT DEFAULT NULL,
+            last_collected TEXT DEFAULT NULL
+        )
+    ''')
+    
+    # Проверяем, есть ли бизнесы
+    cur.execute('SELECT COUNT(*) FROM businesses')
+    count = cur.fetchone()[0]
+    
+    if count == 0:
+        # Вставляем 50 бизнесов
+        businesses = [
+            # ЕДА
+            (1, '🍋 Лимонадный киоск', 'food', 1000, 120),
+            (2, '🍦 Мороженое', 'food', 2500, 300),
+            (3, '🍿 Попкорн', 'food', 5000, 600),
+            (4, '🍔 Закусочная', 'food', 10000, 1200),
+            (5, '🌮 Тако-бар', 'food', 20000, 2400),
+            (6, '🍕 Пиццерия', 'food', 40000, 4800),
+            (7, '🍣 Суши-бар', 'food', 80000, 9600),
+            (8, '🥩 Стейк-хаус', 'food', 150000, 18000),
+            (9, '🍷 Ресторан', 'food', 300000, 36000),
+            (10, '🍾 Элитный ресторан', 'food', 600000, 72000),
+            # ТОРГОВЛЯ
+            (11, '🛒 Ларёк', 'trade', 1500, 180),
+            (12, '📱 Салон связи', 'trade', 4000, 480),
+            (13, '🏪 Магазин', 'trade', 8000, 960),
+            (14, '👗 Бутик', 'trade', 18000, 2160),
+            (15, '💎 Ювелирка', 'trade', 35000, 4200),
+            (16, '🏦 Обменник', 'trade', 70000, 8400),
+            (17, '🏢 Офисный центр', 'trade', 140000, 16800),
+            (18, '🏨 Отель', 'trade', 280000, 33600),
+            (19, '🏗️ Строительная фирма', 'trade', 550000, 66000),
+            (20, '🏙️ Недвижимость', 'trade', 1100000, 132000),
+            # ПРОИЗВОДСТВО
+            (21, '🍺 Пивоварня', 'factory', 3000, 360),
+            (22, '🧵 Швейная фабрика', 'factory', 7000, 840),
+            (23, '🔩 Металлообработка', 'factory', 15000, 1800),
+            (24, '🏭 Завод', 'factory', 30000, 3600),
+            (25, '🔬 Химзавод', 'factory', 60000, 7200),
+            (26, '⚡ Электростанция', 'factory', 120000, 14400),
+            (27, '🚗 Автозавод', 'factory', 250000, 30000),
+            (28, '✈️ Авиазавод', 'factory', 500000, 60000),
+            (29, '🚀 Космический завод', 'factory', 1000000, 120000),
+            (30, '⚛️ Атомная станция', 'factory', 2000000, 240000),
+            # РАЗВЛЕЧЕНИЯ
+            (31, '🎮 Игровой клуб', 'entertainment', 5000, 600),
+            (32, '🎲 Казино', 'entertainment', 12000, 1440),
+            (33, '🎬 Кинотеатр', 'entertainment', 25000, 3000),
+            (34, '🏟️ Стадион', 'entertainment', 50000, 6000),
+            (35, '🎭 Театр', 'entertainment', 100000, 12000),
+            (36, '🎵 Музыкальный лейбл', 'entertainment', 200000, 24000),
+            (37, '🎬 Киностудия', 'entertainment', 400000, 48000),
+            (38, '📺 Телеканал', 'entertainment', 800000, 96000),
+            (39, '🎮 Игровая студия', 'entertainment', 1600000, 192000),
+            (40, '🤖 IT-корпорация', 'entertainment', 3200000, 384000),
+            # МЕГА-БИЗНЕСЫ
+            (41, '🏦 Банк', 'mega', 200000, 24000),
+            (42, '🛢️ Нефтяная вышка', 'mega', 500000, 60000),
+            (43, '💎 Алмазный рудник', 'mega', 1200000, 144000),
+            (44, '🚢 Судоходная компания', 'mega', 2500000, 300000),
+            (45, '✈️ Авиакомпания', 'mega', 5000000, 600000),
+            (46, '🛰️ Спутниковая сеть', 'mega', 10000000, 1200000),
+            (47, '🏙️ Город-спутник', 'mega', 25000000, 3000000),
+            (48, '🪐 Космическая станция', 'mega', 50000000, 6000000),
+            (49, '🌌 Межгалактическая империя', 'mega', 100000000, 12000000),
+            (50, '♾️ Бесконечность', 'mega', 500000000, 60000000),
+        ]
+        
+        for b in businesses:
+            cur.execute('''
+                INSERT INTO businesses (id, name, category, price, income, cooldown)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            ''', (b[0], b[1], b[2], b[3], b[4], 300))
+        
+        conn.commit()
+        print('✅ 50 бизнесов добавлены')
+    
     conn.commit()
     cur.close()
     conn.close()
-    print('✅ Таблица users создана')
+    print('✅ База данных готова')
 
 init_db()
 
-# ===== ФУНКЦИИ ДЛЯ РАБОТЫ С БД =====
+# ===== ФУНКЦИИ РАБОТЫ С БД =====
 def get_user(user_id):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -87,78 +179,50 @@ def update_user(user_id, **kwargs):
     cur.close()
     conn.close()
 
-def get_top_players(limit=10):
+def get_all_businesses():
     conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT game_nick, balance, level FROM users WHERE is_banned = 0 ORDER BY balance DESC LIMIT %s', (limit,))
-    players = cur.fetchall()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute('SELECT * FROM businesses ORDER BY id')
+    businesses = cur.fetchall()
     cur.close()
     conn.close()
-    return players
+    return businesses
 
-def get_all_users():
+def get_business_by_id(biz_id):
     conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT id FROM users')
-    users = cur.fetchall()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute('SELECT * FROM businesses WHERE id = %s', (biz_id,))
+    biz = cur.fetchone()
     cur.close()
     conn.close()
-    return users
+    return biz
 
-def get_stats():
+def buy_business(biz_id, user_id, nick):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute('SELECT COUNT(*) FROM users')
-    total_users = cur.fetchone()[0]
-    cur.execute('SELECT COALESCE(SUM(balance), 0) FROM users')
-    total_balance = cur.fetchone()[0]
-    cur.execute('SELECT COALESCE(MAX(balance), 0) FROM users')
-    max_balance = cur.fetchone()[0]
-    cur.execute('SELECT COALESCE(AVG(balance), 0) FROM users')
-    avg_balance = round(cur.fetchone()[0], 1)
-    cur.execute('SELECT COALESCE(AVG(level), 0) FROM users')
-    avg_level = round(cur.fetchone()[0], 1)
-    cur.execute('SELECT COUNT(*) FROM users WHERE is_banned = 1')
-    banned_count = cur.fetchone()[0]
+    cur.execute('UPDATE businesses SET owner_id = %s, owner_nick = %s, last_collected = %s WHERE id = %s', 
+                (user_id, nick, datetime.now().isoformat(), biz_id))
+    conn.commit()
     cur.close()
     conn.close()
-    return total_users, total_balance, max_balance, avg_balance, avg_level, banned_count
 
-def user_exists(user_id):
+def collect_business_income(biz_id):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute('SELECT id FROM users WHERE id = %s', (user_id,))
-    exists = cur.fetchone() is not None
+    cur.execute('UPDATE businesses SET last_collected = %s WHERE id = %s', 
+                (datetime.now().isoformat(), biz_id))
+    conn.commit()
     cur.close()
     conn.close()
-    return exists
 
-def is_logged_in(user_id):
+def get_user_businesses(user_id):
     conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT is_logged_in FROM users WHERE id = %s', (user_id,))
-    result = cur.fetchone()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute('SELECT * FROM businesses WHERE owner_id = %s ORDER BY id', (user_id,))
+    businesses = cur.fetchall()
     cur.close()
     conn.close()
-    return result and result[0] == 1
-
-def is_banned(user_id):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT is_banned FROM users WHERE id = %s', (user_id,))
-    result = cur.fetchone()
-    cur.close()
-    conn.close()
-    return result and result[0] == 1
-
-def is_admin_by_nick(nick):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT id, role FROM users WHERE game_nick = %s', (nick,))
-    user = cur.fetchone()
-    cur.close()
-    conn.close()
-    return user and (user[0] == ADMIN_ID or user[1] == 'admin')
+    return businesses
 
 def add_exp(user_id, amount):
     conn = get_db_connection()
@@ -178,9 +242,20 @@ def add_exp(user_id, amount):
     conn.close()
     return level_up, level
 
-def log_admin_action(user_id, action):
-    with open('admin_logs.txt', 'a') as f:
-        f.write(f'{datetime.now().strftime("%d.%m.%Y %H:%M")} | Админ ID: {user_id} | {action}\n')
+def get_stats():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT COUNT(*) FROM users')
+    total_users = cur.fetchone()[0]
+    cur.execute('SELECT COALESCE(SUM(balance), 0) FROM users')
+    total_balance = cur.fetchone()[0]
+    cur.execute('SELECT COALESCE(MAX(balance), 0) FROM users')
+    max_balance = cur.fetchone()[0]
+    cur.execute('SELECT COUNT(*) FROM businesses WHERE owner_id IS NOT NULL')
+    total_businesses_owned = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    return total_users, total_balance, max_balance, total_businesses_owned
 
 # ===== КЛАВИАТУРЫ =====
 auth_keyboard = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -189,16 +264,13 @@ auth_keyboard.add('🔑 Войти', '✨ Зарегистрироваться')
 main_keyboard = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
 main_keyboard.add('👤 Профиль', '💰 Баланс')
 main_keyboard.add('🎰 Играть', '📊 Топ игроков')
-main_keyboard.add('🏷️ Все статусы', '🚪 Выйти')
+main_keyboard.add('🏷️ Все статусы', '🏢 Бизнесы')
+main_keyboard.add('🚪 Выйти')
 
 admin_keyboard = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
 admin_keyboard.add('📊 Статистика', '👥 Список игроков')
-admin_keyboard.add('👑 Назначить админа', '📈 Изменить уровень')
 admin_keyboard.add('➕ Выдать монеты', '➖ Забрать монеты')
-admin_keyboard.add('🎁 Выдать опыт', '🔍 Найти игрока')
-admin_keyboard.add('⏳ Бан/Разбан', '🔄 Сброс баланса')
-admin_keyboard.add('📢 Рассылка', '🗑️ Удалить аккаунт')
-admin_keyboard.add('📋 Логи админа', '⬅️ Назад')
+admin_keyboard.add('📢 Рассылка', '⬅️ Назад')
 
 # ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 def hash_password(password):
@@ -207,6 +279,26 @@ def hash_password(password):
 def is_admin(user_id):
     return user_id == ADMIN_ID
 
+def is_logged_in(user_id):
+    user = get_user(user_id)
+    return user and user['is_logged_in'] == 1
+
+def is_banned(user_id):
+    user = get_user(user_id)
+    return user and user['is_banned'] == 1
+
+def get_status(balance):
+    if balance >= 100000: return '🌟 Легенда'
+    elif balance >= 50000: return '💵 Миллионер'
+    elif balance >= 10000: return '🏰 Барон'
+    elif balance >= 5000: return '🏦 Инвестор'
+    elif balance >= 1000: return '👑 Магнат'
+    elif balance >= 500: return '💎 Богач'
+    elif balance >= 200: return '💰 Середняк'
+    elif balance >= 50: return '🪙 Новичок'
+    elif balance >= 1: return '🕊️ Бедняга'
+    else: return '💀 Банкрот'
+
 def get_progress_bar(exp, level):
     needed = level * 50
     filled = min(exp, needed)
@@ -214,44 +306,16 @@ def get_progress_bar(exp, level):
     bar = '█' * percent + '░' * (10 - percent)
     return bar, filled, needed
 
-def get_status(balance):
-    if balance >= 100000:
-        return '🌟 Легенда', balance, 999999999
-    elif balance >= 50000:
-        return '💵 Миллионер', 50000, 100000
-    elif balance >= 10000:
-        return '🏰 Барон', 10000, 50000
-    elif balance >= 5000:
-        return '🏦 Инвестор', 5000, 10000
-    elif balance >= 1000:
-        return '👑 Магнат', 1000, 5000
-    elif balance >= 500:
-        return '💎 Богач', 500, 1000
-    elif balance >= 200:
-        return '💰 Середняк', 200, 500
-    elif balance >= 50:
-        return '🪙 Новичок', 50, 200
-    elif balance >= 1:
-        return '🕊️ Бедняга', 1, 50
-    else:
-        return '💀 Банкрот', 0, 1
-
 def get_next_status(balance):
     statuses = [
-        (0, '💀 Банкрот'),
-        (1, '🕊️ Бедняга'),
-        (50, '🪙 Новичок'),
-        (200, '💰 Середняк'),
-        (500, '💎 Богач'),
-        (1000, '👑 Магнат'),
-        (5000, '🏦 Инвестор'),
-        (10000, '🏰 Барон'),
-        (50000, '💵 Миллионер'),
+        (0, '💀 Банкрот'), (1, '🕊️ Бедняга'), (50, '🪙 Новичок'),
+        (200, '💰 Середняк'), (500, '💎 Богач'), (1000, '👑 Магнат'),
+        (5000, '🏦 Инвестор'), (10000, '🏰 Барон'), (50000, '💵 Миллионер'),
         (100000, '🌟 Легенда')
     ]
-    for i, (threshold, _) in enumerate(statuses):
+    for threshold, name in statuses:
         if balance < threshold:
-            return statuses[i]
+            return threshold, name
     return None
 
 # ===== АВТОРИЗАЦИЯ =====
@@ -259,147 +323,90 @@ def get_next_status(balance):
 def start(msg):
     user_id = msg.from_user.id
     if is_banned(user_id):
-        bot.send_message(msg.chat.id, '🚫 Ваш аккаунт заблокирован. Обратитесь к администратору.')
+        bot.send_message(msg.chat.id, '🚫 Вы заблокированы.')
         return
-    if user_exists(user_id):
+    if get_user(user_id):
         if is_logged_in(user_id):
-            bot.send_message(msg.chat.id, f'👋 Снова здесь, {msg.from_user.first_name or "Игрок"}!', reply_markup=main_keyboard)
+            bot.send_message(msg.chat.id, f'👋 Снова здесь, {msg.from_user.first_name}!', reply_markup=main_keyboard)
         else:
-            bot.send_message(msg.chat.id, '🔐 Вы не авторизованы. Войдите или зарегистрируйтесь.', reply_markup=auth_keyboard)
+            bot.send_message(msg.chat.id, '🔐 Войдите или зарегистрируйтесь.', reply_markup=auth_keyboard)
         return
-    
-    bot.send_message(msg.chat.id, '👋 Добро пожаловать! Для начала зарегистрируйтесь или войдите.', reply_markup=auth_keyboard)
+    bot.send_message(msg.chat.id, '👋 Добро пожаловать!', reply_markup=auth_keyboard)
 
 @bot.message_handler(func=lambda m: m.text == '🔑 Войти')
 def login_start(msg):
-    user_id = msg.from_user.id
-    if not user_exists(user_id):
-        bot.send_message(msg.chat.id, '❌ Вы не зарегистрированы. Нажмите "✨ Зарегистрироваться"')
-        return
-    if is_banned(user_id):
-        bot.send_message(msg.chat.id, '🚫 Ваш аккаунт заблокирован.')
-        return
-    if is_logged_in(user_id):
-        bot.send_message(msg.chat.id, '✅ Вы уже авторизованы!', reply_markup=main_keyboard)
-        return
-    bot.send_message(msg.chat.id, '🔐 Введите ваш игровой ник:')
+    bot.send_message(msg.chat.id, '🔐 Введите ник:')
     bot.register_next_step_handler(msg, login_nick)
 
 def login_nick(msg):
     nick = msg.text.strip()
-    user_id = msg.from_user.id
     user = get_user_by_nick(nick)
     if not user:
-        bot.send_message(msg.chat.id, '❌ Игрок с таким ником не найден.')
+        bot.send_message(msg.chat.id, '❌ Ник не найден.')
         return
     bot.send_message(msg.chat.id, '🔑 Введите пароль:')
     bot.register_next_step_handler(msg, login_password, nick)
 
 def login_password(msg, nick):
-    password = msg.text.strip()
-    user_id = msg.from_user.id
-    hashed = hash_password(password)
     user = get_user_by_nick(nick)
-    if not user or user['password'] != hashed:
-        bot.send_message(msg.chat.id, '❌ Неверный пароль. Попробуйте ещё раз.')
+    if not user or user['password'] != hash_password(msg.text.strip()):
+        bot.send_message(msg.chat.id, '❌ Неверный пароль.')
         return
-    if user['is_banned']:
-        bot.send_message(msg.chat.id, '🚫 Ваш аккаунт заблокирован.')
-        return
-    update_user(user_id, is_logged_in=1)
+    update_user(user['id'], is_logged_in=1)
     bot.send_message(msg.chat.id, f'✅ Добро пожаловать, {nick}!', reply_markup=main_keyboard)
 
 @bot.message_handler(func=lambda m: m.text == '✨ Зарегистрироваться')
 def register_start(msg):
-    bot.send_message(msg.chat.id, '📝 Придумайте игровой ник (от 3 до 15 символов, без пробелов):')
+    bot.send_message(msg.chat.id, '📝 Придумайте ник:')
     bot.register_next_step_handler(msg, register_nick)
 
 def register_nick(msg):
     nick = msg.text.strip()
-    if len(nick) < 3 or len(nick) > 15 or ' ' in nick:
-        bot.send_message(msg.chat.id, '❌ Ник должен быть от 3 до 15 символов без пробелов. Попробуйте ещё раз:')
-        bot.register_next_step_handler(msg, register_nick)
-        return
     if get_user_by_nick(nick):
-        bot.send_message(msg.chat.id, '❌ Этот ник уже занят. Придумайте другой:')
-        bot.register_next_step_handler(msg, register_nick)
+        bot.send_message(msg.chat.id, '❌ Ник занят.')
         return
-    bot.send_message(msg.chat.id, '🔑 Придумайте пароль (минимум 6 символов):')
+    bot.send_message(msg.chat.id, '🔑 Придумайте пароль:')
     bot.register_next_step_handler(msg, register_password, nick)
 
 def register_password(msg, nick):
     password = msg.text.strip()
-    if len(password) < 6:
-        bot.send_message(msg.chat.id, '❌ Пароль должен быть минимум 6 символов. Попробуйте ещё раз:')
-        bot.register_next_step_handler(msg, register_password, nick)
-        return
     bot.send_message(msg.chat.id, '🔁 Повторите пароль:')
-    bot.register_next_step_handler(msg, register_password_confirm, nick, password)
+    bot.register_next_step_handler(msg, register_confirm, nick, password)
 
-def register_password_confirm(msg, nick, password):
-    confirm = msg.text.strip()
-    if confirm != password:
-        bot.send_message(msg.chat.id, '❌ Пароли не совпадают. Попробуйте ещё раз:')
-        bot.register_next_step_handler(msg, register_password_confirm, nick, password)
+def register_confirm(msg, nick, password):
+    if msg.text.strip() != password:
+        bot.send_message(msg.chat.id, '❌ Пароли не совпадают.')
         return
     user_id = msg.from_user.id
-    hashed = hash_password(password)
-    create_user(user_id, nick, hashed)
+    create_user(user_id, nick, hash_password(password))
     update_user(user_id, is_logged_in=1)
-    bot.send_message(msg.chat.id, f'✅ Поздравляю, {nick}! Ты зарегистрирован и авторизован.', reply_markup=main_keyboard)
+    bot.send_message(msg.chat.id, f'✅ Зарегистрирован, {nick}!', reply_markup=main_keyboard)
 
 @bot.message_handler(func=lambda m: m.text == '🚪 Выйти')
 def logout(msg):
-    user_id = msg.from_user.id
-    update_user(user_id, is_logged_in=0)
-    bot.send_message(msg.chat.id, '👋 Вы вышли из аккаунта.', reply_markup=auth_keyboard)
+    update_user(msg.from_user.id, is_logged_in=0)
+    bot.send_message(msg.chat.id, '👋 Выход.', reply_markup=auth_keyboard)
 
 # ===== ПРОФИЛЬ =====
 @bot.message_handler(func=lambda m: m.text == '👤 Профиль')
 def profile(msg):
     user_id = msg.from_user.id
     if not is_logged_in(user_id):
-        bot.send_message(msg.chat.id, '❌ Вы не авторизованы.', reply_markup=auth_keyboard)
-        return
-    if is_banned(user_id):
-        bot.send_message(msg.chat.id, '🚫 Ваш аккаунт заблокирован.')
+        bot.send_message(msg.chat.id, '❌ Войдите.', reply_markup=auth_keyboard)
         return
     user = get_user(user_id)
     if not user:
-        bot.send_message(msg.chat.id, '❌ Ошибка. Попробуйте /start')
         return
-    game_nick = user['game_nick']
-    balance = user['balance']
-    level = user['level']
-    exp = user['exp']
-    reg_date = user['reg_date']
-    
-    username = msg.from_user.username
-    display_username = f'@{username}' if username else 'Нет юза'
-    
-    if is_admin(user_id) or user['role'] == 'admin':
-        status = '👑 Главный Администратор'
-    else:
-        status, _, _ = get_status(balance)
-    
-    bar, filled, needed = get_progress_bar(exp, level)
-    
+    bar, _, needed = get_progress_bar(user['exp'], user['level'])
+    status = '👑 Админ' if is_admin(user_id) else get_status(user['balance'])
     text = f'''
-╔═══════════════════════════════════╗
-║          ✦  👤 ПРОФИЛЬ  ✦          ║
-╠═══════════════════════════════════╣
-║                                   ║
-║   📛 Ник: {game_nick}
-║   🔖 Юзернейм: {display_username}
-║   💰 Баланс: {balance:,} монет
-║   📈 Уровень: {level}
-║   ⭐ Опыт: {exp} / {needed}
-║   📊 Прогресс: [{bar}]
-║   📅 В игре с: {reg_date}
-║                                   ║
-║   🏷️ Статус: {status}
-║                                   ║
-╚═══════════════════════════════════╝
+👤 ПРОФИЛЬ
+Ник: {user['game_nick']}
+Баланс: {user['balance']} монет
+Уровень: {user['level']}
+Опыт: {user['exp']}/{needed}
+Прогресс: [{bar}]
+Статус: {status}
 '''
     bot.send_message(msg.chat.id, text)
 
@@ -408,72 +415,47 @@ def profile(msg):
 def balance(msg):
     user_id = msg.from_user.id
     if not is_logged_in(user_id):
-        bot.send_message(msg.chat.id, '❌ Вы не авторизованы.', reply_markup=auth_keyboard)
-        return
-    if is_banned(user_id):
-        bot.send_message(msg.chat.id, '🚫 Ваш аккаунт заблокирован.')
+        bot.send_message(msg.chat.id, '❌ Войдите.', reply_markup=auth_keyboard)
         return
     user = get_user(user_id)
-    if not user:
-        bot.send_message(msg.chat.id, '❌ Ошибка. Попробуйте /start')
-        return
-    bot.send_message(msg.chat.id, f'💰 Твой баланс: {user["balance"]:,} монет')
+    bot.send_message(msg.chat.id, f'💰 Баланс: {user["balance"]} монет')
 
 # ===== ИГРА =====
 @bot.message_handler(func=lambda m: m.text == '🎰 Играть')
 def game(msg):
     user_id = msg.from_user.id
     if not is_logged_in(user_id):
-        bot.send_message(msg.chat.id, '❌ Вы не авторизованы.', reply_markup=auth_keyboard)
-        return
-    if is_banned(user_id):
-        bot.send_message(msg.chat.id, '🚫 Ваш аккаунт заблокирован.')
+        bot.send_message(msg.chat.id, '❌ Войдите.', reply_markup=auth_keyboard)
         return
     user = get_user(user_id)
-    if not user:
-        bot.send_message(msg.chat.id, '❌ Ошибка. Попробуйте /start')
+    if user['balance'] < 10:
+        bot.send_message(msg.chat.id, '❌ Нужно 10 монет.')
         return
-    balance = user['balance']
-    if balance < 10:
-        bot.send_message(msg.chat.id, '❌ Не хватает 10 монет!')
-        return
-    update_user(user_id, balance=balance - 10)
+    update_user(user_id, balance=user['balance'] - 10)
     win = random.choice([0, 1])
     if win:
-        update_user(user_id, balance=balance - 10 + 25)
-        level_up, new_level = add_exp(user_id, 10)
-        result_text = '🎉 Ты выиграл! +25 монет, +10 опыта'
-        if level_up:
-            result_text += f'\n🎉 УРОВЕНЬ ПОВЫШЕН! Твой уровень: {new_level}'
+        update_user(user_id, balance=user['balance'] - 10 + 25)
+        add_exp(user_id, 10)
+        bot.send_message(msg.chat.id, '🎉 Выиграл! +25 монет, +10 опыта')
     else:
-        level_up, new_level = add_exp(user_id, 2)
-        result_text = '😢 Ты проиграл. -10 монет, +2 опыта'
-        if level_up:
-            result_text += f'\n🎉 УРОВЕНЬ ПОВЫШЕН! Твой уровень: {new_level}'
-    
-    user = get_user(user_id)
-    result_text += f'\n💰 Баланс: {user["balance"]}'
-    bot.send_message(msg.chat.id, result_text)
+        add_exp(user_id, 2)
+        bot.send_message(msg.chat.id, '😢 Проиграл. -10 монет, +2 опыта')
 
 # ===== ТОП =====
 @bot.message_handler(func=lambda m: m.text == '📊 Топ игроков')
 def top_players(msg):
-    user_id = msg.from_user.id
-    if not is_logged_in(user_id):
-        bot.send_message(msg.chat.id, '❌ Вы не авторизованы.', reply_markup=auth_keyboard)
+    if not is_logged_in(msg.from_user.id):
+        bot.send_message(msg.chat.id, '❌ Войдите.', reply_markup=auth_keyboard)
         return
-    if is_banned(user_id):
-        bot.send_message(msg.chat.id, '🚫 Ваш аккаунт заблокирован.')
-        return
-    players = get_top_players(10)
-    if not players:
-        bot.send_message(msg.chat.id, '📭 Нет игроков.')
-        return
-    text = '🏆 ТОП-10 ПО БАЛАНСУ\n\n'
-    for i, (game_nick, balance, level) in enumerate(players, 1):
-        medal = '🥇' if i == 1 else '🥈' if i == 2 else '🥉' if i == 3 else f'{i}.'
-        admin_tag = ' 👑' if is_admin_by_nick(game_nick) else ''
-        text += f'{medal} {game_nick} — {balance:,} монет (уровень {level}){admin_tag}\n'
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT game_nick, balance FROM users ORDER BY balance DESC LIMIT 10')
+    players = cur.fetchall()
+    cur.close()
+    conn.close()
+    text = '🏆 ТОП-10\n\n'
+    for i, (nick, balance) in enumerate(players, 1):
+        text += f'{i}. {nick} — {balance} монет\n'
     bot.send_message(msg.chat.id, text)
 
 # ===== ВСЕ СТАТУСЫ =====
@@ -481,369 +463,212 @@ def top_players(msg):
 def all_statuses(msg):
     user_id = msg.from_user.id
     if not is_logged_in(user_id):
-        bot.send_message(msg.chat.id, '❌ Вы не авторизованы.', reply_markup=auth_keyboard)
-        return
-    if is_banned(user_id):
-        bot.send_message(msg.chat.id, '🚫 Ваш аккаунт заблокирован.')
+        bot.send_message(msg.chat.id, '❌ Войдите.', reply_markup=auth_keyboard)
         return
     user = get_user(user_id)
-    if not user:
-        bot.send_message(msg.chat.id, '❌ Ошибка. Попробуйте /start')
-        return
     balance = user['balance']
-    
-    text = '''
-╔═══════════════════════════════════╗
-║       ✦  🏷️ СТАТУСЫ  ✦           ║
-╠═══════════════════════════════════╣
-║                                   ║
-║   💀 Банкрот             0        ║
-║   🕊️ Бедняга          1 – 49     ║
-║   🪙 Новичок          50 – 199   ║
-║   💰 Середняк        200 – 499   ║
-║   💎 Богач           500 – 999   ║
-║   👑 Магнат        1,000 – 4,999 ║
-║   🏦 Инвестор      5,000 – 9,999 ║
-║   🏰 Барон        10,000 – 49,999║
-║   💵 Миллионер    50,000 – 99,999║
-║   🌟 Легенда       100,000+      ║
-║                                   ║
-╠═══════════════════════════════════╣
+    status = get_status(balance)
+    next_data = get_next_status(balance)
+    text = f'''
+🏷️ СТАТУСЫ
+💀 Банкрот: 0
+🕊️ Бедняга: 1-49
+🪙 Новичок: 50-199
+💰 Середняк: 200-499
+💎 Богач: 500-999
+👑 Магнат: 1000-4999
+🏦 Инвестор: 5000-9999
+🏰 Барон: 10000-49999
+💵 Миллионер: 50000-99999
+🌟 Легенда: 100000+
+
+Твой статус: {status}
 '''
-    
-    if is_admin(user_id) or user['role'] == 'admin':
-        text += '   👑 Главный Администратор\n'
-    
-    current_status, threshold, next_threshold = get_status(balance)
-    next_status_data = get_next_status(balance)
-    
-    if next_status_data:
-        next_threshold, next_status_name = next_status_data
-        remaining = next_threshold - balance
-        progress = int((balance - threshold) / (next_threshold - threshold) * 100) if next_threshold > threshold else 0
-        bar = '█' * (progress // 10) + '░' * (10 - (progress // 10))
-        text += f'''   📌 Твой статус: {current_status}
-   📈 До "{next_status_name}": {remaining} монет
-   📊 Прогресс: [{bar}] {progress}%
-'''
-    else:
-        text += f'''   📌 Твой статус: {current_status}
-   👑 Ты достиг максимального статуса!
-   📊 Прогресс: [██████████] 100%
-'''
-    
-    text += '╚═══════════════════════════════════╝'
+    if next_data:
+        threshold, name = next_data
+        text += f'До {name}: {threshold - balance} монет'
     bot.send_message(msg.chat.id, text)
+
+# ===== БИЗНЕСЫ =====
+@bot.message_handler(func=lambda m: m.text == '🏢 Бизнесы')
+def businesses_menu(msg):
+    user_id = msg.from_user.id
+    if not is_logged_in(user_id):
+        bot.send_message(msg.chat.id, '❌ Войдите.', reply_markup=auth_keyboard)
+        return
+    
+    user = get_user(user_id)
+    my_biz = get_user_businesses(user_id)
+    all_biz = get_all_businesses()
+    
+    text = f'🏢 БИЗНЕСЫ\n💰 Баланс: {user["balance"]} монет\n\n'
+    text += '📋 Категории:\n'
+    text += '🍔 Еда (1-10) | 🛍️ Торговля (11-20)\n'
+    text += '🏭 Производство (21-30) | 🎮 Развлечения (31-40)\n'
+    text += '🌌 Мега-бизнесы (41-50)\n\n'
+    text += f'🏢 Мои бизнесы: {len(my_biz)}\n'
+    
+    if my_biz:
+        total_income = sum(b['income'] for b in my_biz)
+        text += f'💰 Доход в час: {total_income} монет\n'
+    
+    text += '\nВведите номер бизнеса для покупки (1-50):'
+    bot.send_message(msg.chat.id, text)
+    bot.register_next_step_handler(msg, business_action)
+
+def business_action(msg):
+    user_id = msg.from_user.id
+    try:
+        biz_id = int(msg.text.strip())
+    except:
+        bot.send_message(msg.chat.id, '❌ Введите номер от 1 до 50.')
+        return
+    
+    biz = get_business_by_id(biz_id)
+    if not biz:
+        bot.send_message(msg.chat.id, '❌ Бизнес не найден.')
+        return
+    
+    user = get_user(user_id)
+    
+    if biz['owner_id'] is None:
+        # Бизнес свободен
+        if user['balance'] < biz['price']:
+            bot.send_message(msg.chat.id, f'❌ Не хватает {biz["price"] - user["balance"]} монет.')
+            return
+        # Покупка
+        update_user(user_id, balance=user['balance'] - biz['price'])
+        buy_business(biz_id, user_id, user['game_nick'])
+        bot.send_message(msg.chat.id, f'✅ Вы купили {biz["name"]}! Доход: {biz["income"]} монет в час.')
+        
+        # Уведомление всем админам
+        if is_admin(user_id):
+            bot.send_message(ADMIN_ID, f'👑 {user["game_nick"]} купил {biz["name"]}!')
+        
+        return
+    
+    elif biz['owner_id'] == user_id:
+        # Сбор дохода
+        if biz['last_collected']:
+            last = datetime.fromisoformat(biz['last_collected'])
+            now = datetime.now()
+            hours = (now - last).total_seconds() / 3600
+            income = int(biz['income'] * hours)
+            if income < 1:
+                bot.send_message(msg.chat.id, '⏳ Слишком рано. Доход ещё не накопился.')
+                return
+            collect_business_income(biz_id)
+            update_user(user_id, balance=user['balance'] + income)
+            bot.send_message(msg.chat.id, f'💰 Собрано {income} монет с {biz["name"]}!')
+        else:
+            collect_business_income(biz_id)
+            bot.send_message(msg.chat.id, f'✅ Начало сбора дохода с {biz["name"]}!')
+    else:
+        bot.send_message(msg.chat.id, f'🔒 {biz["name"]} принадлежит {biz["owner_nick"]}')
 
 # ===== АДМИН-ПАНЕЛЬ =====
 @bot.message_handler(commands=['admin'])
 def admin_panel(msg):
-    user_id = msg.from_user.id
-    if not is_admin(user_id):
+    if not is_admin(msg.from_user.id):
         bot.send_message(msg.chat.id, '❌ Доступ запрещён.')
         return
-    bot.send_message(msg.chat.id, '🔐 Админ-панель\nВыберите действие:', reply_markup=admin_keyboard)
+    bot.send_message(msg.chat.id, '🔐 Админ-панель', reply_markup=admin_keyboard)
 
 @bot.message_handler(func=lambda m: m.text == '⬅️ Назад' and is_admin(m.from_user.id))
 def back_to_main(msg):
     bot.send_message(msg.chat.id, '🏠 Главное меню', reply_markup=main_keyboard)
 
-# 1. Статистика
 @bot.message_handler(func=lambda m: m.text == '📊 Статистика' and is_admin(m.from_user.id))
 def stats(msg):
-    total_users, total_balance, max_balance, avg_balance, avg_level, banned_count = get_stats()
+    total_users, total_balance, max_balance, total_businesses = get_stats()
     text = f'''
-📊 СТАТИСТИКА СЕРВЕРА
-
-👥 Всего игроков: {total_users}
-🚫 Заблокировано: {banned_count}
+📊 СТАТИСТИКА
+👥 Игроков: {total_users}
 💰 Общий баланс: {total_balance:,}
 🏆 Макс. баланс: {max_balance:,}
-📈 Средний баланс: {avg_balance}
-📈 Средний уровень: {avg_level}
-
-📅 Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')}
+🏢 Бизнесов куплено: {total_businesses}/50
 '''
     bot.send_message(msg.chat.id, text)
-    log_admin_action(msg.from_user.id, 'Просмотр статистики')
 
-# 2. Список игроков
 @bot.message_handler(func=lambda m: m.text == '👥 Список игроков' and is_admin(m.from_user.id))
 def players_list(msg):
-    players = get_top_players(10)
-    if not players:
-        bot.send_message(msg.chat.id, '📭 Нет игроков.')
-        return
-    text = '🏆 ТОП-10 ИГРОКОВ\n\n'
-    for i, (game_nick, balance, level) in enumerate(players, 1):
-        admin_tag = ' 👑' if is_admin_by_nick(game_nick) else ''
-        text += f'{i}. {game_nick} — {balance:,} монет (уровень {level}){admin_tag}\n'
-    bot.send_message(msg.chat.id, text)
-    log_admin_action(msg.from_user.id, 'Просмотр списка игроков')
-
-# 3. Назначить админа
-@bot.message_handler(func=lambda m: m.text == '👑 Назначить админа' and is_admin(m.from_user.id))
-def promote_admin_start(msg):
-    bot.send_message(msg.chat.id, '✏️ Введите ник игрока, которого хотите сделать админом:')
-    bot.register_next_step_handler(msg, promote_admin_process)
-
-def promote_admin_process(msg):
-    nick = msg.text.strip()
-    user = get_user_by_nick(nick)
-    if not user:
-        bot.send_message(msg.chat.id, f'❌ Игрок {nick} не найден.')
-        return
-    update_user(user['id'], role='admin')
-    bot.send_message(msg.chat.id, f'✅ {nick} теперь администратор! 👑')
-    log_admin_action(msg.from_user.id, f'Назначил админа: {nick}')
-
-# 4. Найти игрока
-@bot.message_handler(func=lambda m: m.text == '🔍 Найти игрока' and is_admin(m.from_user.id))
-def find_player_start(msg):
-    bot.send_message(msg.chat.id, '✏️ Введите ник или ID игрока:')
-    bot.register_next_step_handler(msg, find_player_process)
-
-def find_player_process(msg):
-    query = msg.text.strip()
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    if query.isdigit():
-        cur.execute('SELECT * FROM users WHERE id = %s', (int(query),))
-    else:
-        cur.execute('SELECT * FROM users WHERE game_nick ILIKE %s', (f'%{query}%',))
-    user = cur.fetchone()
+    cur = conn.cursor()
+    cur.execute('SELECT game_nick, balance FROM users ORDER BY balance DESC LIMIT 10')
+    players = cur.fetchall()
     cur.close()
     conn.close()
-    if not user:
-        bot.send_message(msg.chat.id, f'❌ Игрок "{query}" не найден.')
-        return
-    text = f'''
-📋 ИНФОРМАЦИЯ ОБ ИГРОКЕ
-
-👤 Ник: {user['game_nick']}
-🆔 ID: {user['id']}
-💰 Баланс: {user['balance']} монет
-📈 Уровень: {user['level']}
-⭐ Опыт: {user['exp']}
-👑 Роль: {user['role']}
-🚫 Бан: {"Да" if user['is_banned'] else "Нет"}
-📅 Регистрация: {user['reg_date']}
-'''
+    text = '👥 ТОП-10 ИГРОКОВ\n\n'
+    for i, (nick, balance) in enumerate(players, 1):
+        text += f'{i}. {nick} — {balance} монет\n'
     bot.send_message(msg.chat.id, text)
-    log_admin_action(msg.from_user.id, f'Поиск игрока: {query}')
 
-# 5. Изменить уровень
-@bot.message_handler(func=lambda m: m.text == '📈 Изменить уровень' and is_admin(m.from_user.id))
-def change_level_start(msg):
-    bot.send_message(msg.chat.id, '✏️ Введите ник и новый уровень через пробел:\nПример: Алексей 5')
-    bot.register_next_step_handler(msg, change_level_process)
-
-def change_level_process(msg):
-    try:
-        parts = msg.text.split()
-        if len(parts) != 2:
-            bot.send_message(msg.chat.id, '❌ Неверный формат. Нужно: ник уровень')
-            return
-        nick = parts[0]
-        new_level = int(parts[1])
-        user = get_user_by_nick(nick)
-        if not user:
-            bot.send_message(msg.chat.id, f'❌ Игрок {nick} не найден.')
-            return
-        update_user(user['id'], level=new_level)
-        bot.send_message(msg.chat.id, f'✅ Уровень {nick} изменён на {new_level}')
-        log_admin_action(msg.from_user.id, f'Изменил уровень {nick} на {new_level}')
-    except:
-        bot.send_message(msg.chat.id, '❌ Ошибка. Используйте: ник уровень')
-
-# 6. Выдать монеты
 @bot.message_handler(func=lambda m: m.text == '➕ Выдать монеты' and is_admin(m.from_user.id))
 def give_coins_start(msg):
-    bot.send_message(msg.chat.id, '✏️ Введите ник и сумму через пробел:\nПример: Алексей 100')
+    bot.send_message(msg.chat.id, '✏️ Введите ник и сумму:')
     bot.register_next_step_handler(msg, give_coins_process)
 
 def give_coins_process(msg):
     try:
         parts = msg.text.split()
-        if len(parts) != 2:
-            bot.send_message(msg.chat.id, '❌ Неверный формат. Нужно: ник сумма')
-            return
-        nick = parts[0]
-        amount = int(parts[1])
+        nick, amount = parts[0], int(parts[1])
         user = get_user_by_nick(nick)
         if not user:
-            bot.send_message(msg.chat.id, f'❌ Игрок {nick} не найден.')
+            bot.send_message(msg.chat.id, '❌ Игрок не найден.')
             return
         update_user(user['id'], balance=user['balance'] + amount)
         bot.send_message(msg.chat.id, f'✅ {nick} получил {amount} монет.')
-        log_admin_action(msg.from_user.id, f'Выдал {amount} монет игроку {nick}')
     except:
-        bot.send_message(msg.chat.id, '❌ Ошибка. Используйте: ник 100')
+        bot.send_message(msg.chat.id, '❌ Ошибка. Формат: ник сумма')
 
-# 7. Забрать монеты
 @bot.message_handler(func=lambda m: m.text == '➖ Забрать монеты' and is_admin(m.from_user.id))
 def take_coins_start(msg):
-    bot.send_message(msg.chat.id, '✏️ Введите ник и сумму для списания:\nПример: Алексей 50')
+    bot.send_message(msg.chat.id, '✏️ Введите ник и сумму:')
     bot.register_next_step_handler(msg, take_coins_process)
 
 def take_coins_process(msg):
     try:
         parts = msg.text.split()
-        if len(parts) != 2:
-            bot.send_message(msg.chat.id, '❌ Неверный формат.')
-            return
-        nick = parts[0]
-        amount = int(parts[1])
+        nick, amount = parts[0], int(parts[1])
         user = get_user_by_nick(nick)
         if not user:
-            bot.send_message(msg.chat.id, f'❌ Игрок {nick} не найден.')
+            bot.send_message(msg.chat.id, '❌ Игрок не найден.')
             return
-        new_balance = user['balance'] - amount
-        if new_balance < 0:
-            new_balance = 0
+        new_balance = max(0, user['balance'] - amount)
         update_user(user['id'], balance=new_balance)
-        bot.send_message(msg.chat.id, f'✅ У {nick} списано {amount} монет. Баланс: {new_balance}')
-        log_admin_action(msg.from_user.id, f'Списал {amount} монет у игрока {nick}')
+        bot.send_message(msg.chat.id, f'✅ У {nick} списано {amount} монет.')
     except:
-        bot.send_message(msg.chat.id, '❌ Ошибка. Используйте: ник 50')
+        bot.send_message(msg.chat.id, '❌ Ошибка. Формат: ник сумма')
 
-# 8. Выдать опыт
-@bot.message_handler(func=lambda m: m.text == '🎁 Выдать опыт' and is_admin(m.from_user.id))
-def give_exp_start(msg):
-    bot.send_message(msg.chat.id, '✏️ Введите ник и количество опыта через пробел:\nПример: Алексей 50')
-    bot.register_next_step_handler(msg, give_exp_process)
-
-def give_exp_process(msg):
-    try:
-        parts = msg.text.split()
-        if len(parts) != 2:
-            bot.send_message(msg.chat.id, '❌ Неверный формат. Нужно: ник опыт')
-            return
-        nick = parts[0]
-        amount = int(parts[1])
-        user = get_user_by_nick(nick)
-        if not user:
-            bot.send_message(msg.chat.id, f'❌ Игрок {nick} не найден.')
-            return
-        add_exp(user['id'], amount)
-        bot.send_message(msg.chat.id, f'✅ {nick} получил {amount} опыта.')
-        log_admin_action(msg.from_user.id, f'Выдал {amount} опыта игроку {nick}')
-    except:
-        bot.send_message(msg.chat.id, '❌ Ошибка. Используйте: ник 50')
-
-# 9. Бан/Разбан
-@bot.message_handler(func=lambda m: m.text == '⏳ Бан/Разбан' and is_admin(m.from_user.id))
-def ban_player_start(msg):
-    bot.send_message(msg.chat.id, '✏️ Введите ник игрока для бана или разбана:')
-    bot.register_next_step_handler(msg, ban_player_process)
-
-def ban_player_process(msg):
-    nick = msg.text.strip()
-    user = get_user_by_nick(nick)
-    if not user:
-        bot.send_message(msg.chat.id, f'❌ Игрок {nick} не найден.')
-        return
-    new_status = 0 if user['is_banned'] else 1
-    status_text = 'забанен' if new_status == 1 else 'разбанен'
-    update_user(user['id'], is_banned=new_status)
-    bot.send_message(msg.chat.id, f'✅ {nick} {status_text}!')
-    log_admin_action(msg.from_user.id, f'{status_text.capitalize()} игрок {nick}')
-
-# 10. Сброс баланса
-@bot.message_handler(func=lambda m: m.text == '🔄 Сброс баланса' and is_admin(m.from_user.id))
-def reset_balance_all(msg):
-    bot.send_message(msg.chat.id, '⚠️ ВНИМАНИЕ! Вы действительно хотите обнулить баланс ВСЕМ игрокам?\nНапишите ДА для подтверждения.')
-    bot.register_next_step_handler(msg, reset_balance_confirm)
-
-def reset_balance_confirm(msg):
-    if msg.text.upper() == 'ДА':
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute('UPDATE users SET balance = 0')
-        conn.commit()
-        cur.close()
-        conn.close()
-        bot.send_message(msg.chat.id, '✅ Баланс всех игроков обнулён.')
-        log_admin_action(msg.from_user.id, 'Сбросил баланс всем игрокам')
-    else:
-        bot.send_message(msg.chat.id, '❌ Операция отменена.')
-
-# 11. Рассылка
 @bot.message_handler(func=lambda m: m.text == '📢 Рассылка' and is_admin(m.from_user.id))
 def broadcast_start(msg):
-    bot.send_message(msg.chat.id, '✏️ Введите текст для рассылки:')
+    bot.send_message(msg.chat.id, '✏️ Введите текст:')
     bot.register_next_step_handler(msg, broadcast_process)
 
 def broadcast_process(msg):
     text = msg.text
-    users = get_all_users()
-    if not users:
-        bot.send_message(msg.chat.id, '❌ Нет пользователей.')
-        return
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT id FROM users')
+    users = cur.fetchall()
+    cur.close()
+    conn.close()
     sent = 0
     for user in users:
         try:
-            bot.send_message(user[0], f'📢 Сообщение от админа:\n\n{text}')
+            bot.send_message(user[0], f'📢 {text}')
             sent += 1
         except:
             pass
-    bot.send_message(msg.chat.id, f'✅ Рассылка завершена. Отправлено {sent} пользователям.')
-    log_admin_action(msg.from_user.id, f'Рассылка: "{text[:30]}..."')
-
-# 12. Удалить аккаунт
-@bot.message_handler(func=lambda m: m.text == '🗑️ Удалить аккаунт' and is_admin(m.from_user.id))
-def delete_account_start(msg):
-    bot.send_message(msg.chat.id, '⚠️ Введите ник игрока для ПОЛНОГО УДАЛЕНИЯ аккаунта:\n(Это действие необратимо!)')
-    bot.register_next_step_handler(msg, delete_account_process)
-
-def delete_account_process(msg):
-    nick = msg.text.strip()
-    user = get_user_by_nick(nick)
-    if not user:
-        bot.send_message(msg.chat.id, f'❌ Игрок {nick} не найден.')
-        return
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('DELETE FROM users WHERE game_nick = %s', (nick,))
-    conn.commit()
-    cur.close()
-    conn.close()
-    bot.send_message(msg.chat.id, f'🗑️ Аккаунт {nick} удалён.')
-    log_admin_action(msg.from_user.id, f'Удалил аккаунт {nick}')
-
-# 13. Логи админа
-@bot.message_handler(func=lambda m: m.text == '📋 Логи админа' and is_admin(m.from_user.id))
-def show_logs(msg):
-    try:
-        with open('admin_logs.txt', 'r') as f:
-            logs = f.read().splitlines()
-            last_logs = logs[-20:] if len(logs) > 20 else logs
-            text = '📋 Последние 20 действий админа:\n\n' + '\n'.join(last_logs)
-            bot.send_message(msg.chat.id, text)
-    except:
-        bot.send_message(msg.chat.id, '📭 Логов пока нет.')
+    bot.send_message(msg.chat.id, f'✅ Отправлено {sent} пользователям.')
 
 # ===== ЗАПУСК =====
 if __name__ == '__main__':
-    import signal
-    import sys
-    
-    def shutdown_handler(signum, frame):
-        print('🛑 Завершаем работу...')
-        bot.remove_webhook()
-        sys.exit(0)
-    
-    signal.signal(signal.SIGTERM, shutdown_handler)
-    signal.signal(signal.SIGINT, shutdown_handler)
-    
     print('✅ Бот запущен!')
-    print('📁 База данных: PostgreSQL (Railway)')
     bot.remove_webhook()
-    
     while True:
         try:
             bot.infinity_polling(timeout=10, long_polling_timeout=5)
         except Exception as e:
-            print(f'❌ Ошибка: {e}. Перезапуск через 5 секунд...')
-            import time
+            print(f'❌ Ошибка: {e}. Перезапуск...')
             time.sleep(5)
